@@ -554,7 +554,13 @@ GD_ASSERT.test('T2 四档门速 1 秒水平位移', function () {
   var want = { 0.5: 8.372, 1: 10.386, 2: 12.914, 3: 15.600, 4: 19.200 };
   for (var k in want) {
     if (!Object.prototype.hasOwnProperty.call(want, k)) continue;
-    var st = GD_Physics.create({ objects: [], meta: { endBlock: 100000 } });
+    // 关卡必须带非空 segments：Task 2 修掉 respawn 的静默回退之后，
+    // 缺 segments 的关卡在死亡重开时会抛错，而不是悄悄变成 cube 1x。
+    var st = GD_Physics.create({
+      segments: [{ from: 0, to: 1e9, mode: 'cube', speed: 1 }],
+      objects: [],
+      meta: { endBlock: 1e9 }
+    });
     st.speedKey = parseFloat(k);
     for (var i = 0; i < 240; i++) GD_Physics.step(st, false);
     GD_ASSERT.approx(st.x, want[k], 0.02, k + 'x 速度');
@@ -564,7 +570,10 @@ GD_ASSERT.test('T2 四档门速 1 秒水平位移', function () {
 GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
   var m1 = GD_Physics.measureJump(1), m2 = GD_Physics.measureJump(2);
   GD_ASSERT.approx(m2.span / m1.span, 1.243, 0.03, '跳距倍率');
-  GD_ASSERT.approx(m2.airtime / m1.airtime, 1.023, 0.05, '滞空几乎不随速度变');
+  // 滞空与水平速度**完全无关**：竖直轨迹只有 v0 和 g，落地步数一模一样。
+  // spec §4.1 说原版 0.389 → 0.398 微变，那是原版按帧子步的产物；我们的定步长
+  // 实现是解析相等，所以这里钉成精确相等，不要写成 1.023 那种"看着像"的比值。
+  GD_ASSERT.near(m2.airtime, m1.airtime, 1e-9, '滞空不随速度变');
 });
 ```
 
@@ -574,7 +583,8 @@ GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
 
 预期：**直接通过**，`pass: 5, fail: 0, registered: 5, runErrors: []`（`SPEEDS` 表在 Task 2 已写入）。这一步的意义是把"门上的数字是名义标签不是真实倍率"这个反直觉事实钉进回归测试——将来谁把它改成 `speed * multiplier` 就会红。
 
-若 `T2b` 的滞空比值红：说明 `SPEEDS` 被改成了线性倍率。对照 spec §4.1 表格恢复。
+若 `T2b` 的 `跳距倍率` 红：说明 `SPEEDS` 被改成了线性倍率（2x 真变成 2 倍）。对照 spec §4.1 表格恢复。
+若 `滞空不随速度变` 红：说明竖直积分被接到了水平速度上（原版和我们的实现都不该这样），同样是回看 `stepCube` 而不是放宽容差。
 
 - [ ] **Step 3: Commit**
 
