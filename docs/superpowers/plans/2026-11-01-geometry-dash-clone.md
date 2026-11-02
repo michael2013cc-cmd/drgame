@@ -1,0 +1,1719 @@
+# Geometry Dash 同人复刻（Crossbeat）Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 做出一个双击即玩的网页横版节奏跳跃游戏，物理常数对齐 Geometry Dash 2.2，含方块与飞船两种模式和一个 32 秒的原创关卡。
+
+**Architecture:** 六个单向依赖的模块——`level.js`（纯数据）→ `physics.js`（唯一状态持有者，velocity-Verlet 定步长积分，不引用任何浏览器 API）→ `render.js`/`hud.js`（只读快照绘制），`input.js`/`audio.js` 提供外部时钟与输入，`main.js` 装配并暴露测试钩子。
+
+**Tech Stack:** 原生 Canvas 2D + WebAudio + 传统 `<script>`（无 ES module、无构建、无依赖）。测试在真实浏览器中执行，用 Python 起静态服务 + browser-use 驱动。
+
+**Spec:** [docs/superpowers/specs/2026-11-01-geometry-dash-clone-design.md](../specs/2026-11-01-geometry-dash-clone-design.md)
+
+---
+
+## 环境事实（不要重复踩）
+
+- **本机无 Node**：`node` 不在 PATH，`C:\Program Files\nodejs` 不存在，Qoder 安装目录内无 `node.exe`。任何 `node xxx` 命令都会失败。
+- **`mcp__node-repl__node_repl` 不是 Node**：实测无 `require`、无 `process`、无文件系统。只适合算数，不能跑测试。
+- **可用**：Python 3.11/3.14、Chrome、Edge、browser-use MCP（`navigate_page` / `evaluate_script` / `take_screenshot`）。
+- 所有测试通过 `tests/harness.html` 在浏览器里跑，结果读回 `window.__RESULTS__`。
+
+## 关键实现决策：为什么必须用 velocity-Verlet
+
+朴素半隐式欧拉（`vy -= g*dt; y += vy*dt`）在 1/240 步长下：
+
+| 量 | 目标 | 半隐式欧拉实测 | 偏差 |
+|---|---|---|---|
+| 顶点高度 | 2.173 格 | 2.124 格 | **−2.3%** ← 超出 T1 的 2% 容差 |
+| 滞空 | 0.389 s | 0.3875 s | −0.4% |
+
+改用 velocity-Verlet（`y += vy*dt - 0.5*g*dt*dt; vy -= g*dt`），对恒定加速度**解析精确**：
+
+| 量 | 目标 | Verlet 实测 | 偏差 |
+|---|---|---|---|
+| 顶点高度 | 2.173 格 | 2.1737 格 | +0.02% |
+| 滞空（含落地取整） | 0.389 s | 0.3917 s | +0.7% |
+| 跳距 @1x | 4.04 格 | 4.064 格 | +0.6% |
+
+全部落在 2% 容差内。**不要"顺手简化"成半隐式欧拉**，T1 会红。
+
+---
+
+## 文件结构
+
+| 文件 | 职责 | 依赖 |
+|---|---|---|
+| `level.js` | `GD_Level.crossbeat` 纯数据 + `GD_Level.validate()` | 无 |
+| `physics.js` | `GD_Physics`：状态创建、单步推进、判定、模式切换 | 无（level 由参数注入） |
+| `render.js` | `GD_Render`：视差背景、物体、图标、粒子 | 无（读快照） |
+| `hud.js` | `GD_Hud`：FPS、Attempt、进度条、死亡提示 | 无 |
+| `input.js` | `GD_Input`：空格/指针/触摸 → 布尔 `held` | 无 |
+| `audio.js` | `GD_Audio`：154 BPM WebAudio 合成循环 | 无 |
+| `main.js` | 装配 + rAF 定步长循环 + `window.__GD_TEST__` | 上述全部 |
+| `index.html` | 游玩入口，`<script src>` 依次加载 | — |
+| `tests/assert.js` | `GD_ASSERT`：测试注册、`approx`/`ok`、结果汇总 | 无 |
+| `tests/harness.html` | 测试页，加载被测脚本并跑 `GD_ASSERT.run()` | — |
+| `tests/physics.test.js` | T1 T2 T4 T5 T6 | GD_Physics, GD_ASSERT |
+| `tests/replay.test.js` | T3 通关机器人 | GD_Physics, GD_Level, GD_ASSERT |
+| `tests/replay.js` | 按键序列 fixture | 无 |
+
+> 注：spec §14 写的是"6 个 js"，实际是 7 个——`main.js`（装配与定步长循环）在 spec 的模块图里存在但没进文件清单。这是清单遗漏，不是范围扩大。
+
+**每个文件的提交节奏**：写完一个任务就提交一次。不要攒。
+
+---
+
+## 测试执行流程（每个任务都用它）
+
+**Step A — 起静态服务**（只需一次，跨任务复用；后台运行）
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && python -m http.server 8765 --bind 127.0.0.1
+```
+
+用 Bash 工具的 `run_in_background: true`。预期：进程存活，无输出即正常。
+
+**Step B — 打开测试页**
+
+MCP 调用 `mcp__browser-use__navigate_page`，`url = http://127.0.0.1:8765/tests/harness.html`。
+
+**Step C — 读回结果**
+
+MCP 调用 `mcp__browser-use__evaluate_script`，脚本：
+
+```js
+() => ({ ready: window.__READY__ === true, r: window.__RESULTS__ })
+```
+
+预期：`ready: true`，`r.fail` 为 `0`，`r.pass` 等于已写测试数。若 `ready` 为 false，说明有脚本抛异常——用 `list_console_messages` 取错误。
+
+---
+
+## Task 1: 测试脚手架
+
+**Files:**
+- Create: `tests/assert.js`
+- Create: `tests/harness.html`
+- Create: `tests/smoke.test.js`
+
+- [ ] **Step 1: 写断言收集器**
+
+`tests/assert.js`：
+
+```js
+window.GD_ASSERT = (function () {
+  var tests = [];
+  function test(name, fn) { tests.push({ name: name, fn: fn }); }
+
+  function approx(actual, expected, tolPct, label) {
+    var err = Math.abs(actual - expected) / Math.abs(expected);
+    if (err > tolPct) {
+      throw new Error((label || 'approx') + ': 期望 ' + expected +
+        ' 实得 ' + actual + ' 偏差 ' + (err * 100).toFixed(2) + '% > ' + (tolPct * 100) + '%');
+    }
+  }
+  function ok(cond, label) {
+    if (!cond) throw new Error('断言失败: ' + (label || 'ok'));
+  }
+  function near(actual, expected, abs, label) {
+    if (Math.abs(actual - expected) > abs) {
+      throw new Error((label || 'near') + ': 期望 ' + expected + ' 实得 ' + actual +
+        ' 差 ' + Math.abs(actual - expected).toFixed(6) + ' > ' + abs);
+    }
+  }
+
+  function run() {
+    var pass = 0, fail = 0, log = [];
+    for (var i = 0; i < tests.length; i++) {
+      var t = tests[i];
+      try { t.fn(); pass++; log.push('PASS ' + t.name); }
+      catch (e) { fail++; log.push('FAIL ' + t.name + ' — ' + e.message); }
+    }
+    window.__RESULTS__ = { pass: pass, fail: fail, log: log };
+    window.__READY__ = true;
+    document.title = fail === 0 ? 'PASS ' + pass : 'FAIL ' + fail;
+    return window.__RESULTS__;
+  }
+
+  return { test: test, approx: approx, ok: ok, near: near, run: run };
+})();
+```
+
+- [ ] **Step 2: 写测试页**
+
+`tests/harness.html`：
+
+```html
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>GD tests</title></head>
+<body style="font:12px monospace;background:#111;color:#ddd;margin:0;padding:12px">
+<pre id="out">running...</pre>
+<script src="assert.js"></script>
+<script src="../level.js"></script>
+<script src="../physics.js"></script>
+<script src="smoke.test.js"></script>
+<script src="physics.test.js"></script>
+<script src="replay.js"></script>
+<script src="replay.test.js"></script>
+<script>
+  // 尚未创建的文件先容错：缺文件时 script 标签只是 404，不影响其余加载
+  window.addEventListener('error', function (e) {
+    (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(String(e.message || e.filename));
+  }, true);
+  var res = GD_ASSERT.run();
+  res.loadErrors = window.__LOAD_ERRORS__ || [];
+  document.getElementById('out').textContent = JSON.stringify(res, null, 1);
+</script>
+</body>
+</html>
+```
+
+注意：`level.js`、`physics.js`、`physics.test.js`、`replay.js`、`replay.test.js` 在本任务还不存在，浏览器会报 404。传统 `<script src>` 404 不会中断后续脚本执行，所以本任务能先跑通。
+
+- [ ] **Step 3: 写一个必然通过的冒烟测试**
+
+`tests/smoke.test.js`：
+
+```js
+GD_ASSERT.test('S1 脚手架可用', function () {
+  GD_ASSERT.ok(typeof GD_ASSERT.approx === 'function', 'approx 存在');
+  GD_ASSERT.approx(2.173, 2.17, 0.02, 'approx 自身精度');
+});
+
+GD_ASSERT.test('S2 断言失败能被捕获', function () {
+  var caught = false;
+  try {
+    // 内部再跑一次必然失败的近似，确认它会抛
+    GD_ASSERT.approx(1.0, 2.0, 0.02, '故意失败');
+  } catch (e) { caught = /期望/.test(e.message); }
+  GD_ASSERT.ok(caught, 'approx 失败时应抛出带"期望"的错误');
+});
+```
+
+- [ ] **Step 4: 起服务并跑测试**
+
+按上面「测试执行流程」Step A/B/C。
+
+预期返回：
+
+```json
+{ "ready": true, "r": { "pass": 2, "fail": 0, "log": ["PASS S1 脚手架可用", "PASS S2 断言失败能被捕获"] } }
+```
+
+`loadErrors` 里会有 5 条 404（level.js / physics.js / physics.test.js / replay.js / replay.test.js），**这是本任务的预期状态**，从 Task 2 起逐条减少。
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 浏览器内测试脚手架
+
+本机无 Node，测试改为静态服务 + browser-use 驱动 harness.html。"
+```
+
+---
+
+## Task 2: 物理核心与跳跃常数（T1）
+
+**Files:**
+- Create: `physics.js`
+- Create: `tests/physics.test.js`
+
+- [ ] **Step 1: 写失败的测试 T1**
+
+`tests/physics.test.js`：
+
+```js
+GD_ASSERT.test('T1 方块跳跃常数', function () {
+  var m = GD_Physics.measureJump(1);
+  GD_ASSERT.approx(m.airtime, 0.389, 0.02, '滞空秒');
+  GD_ASSERT.approx(m.apex, 2.17, 0.02, '顶点格');
+  GD_ASSERT.approx(m.span, 4.04, 0.02, '@1x 跳距格');
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+预期：`ready: true`，`fail: 1`，log 含 `FAIL T1 方块跳跃常数 — GD_Physics is not defined`。
+
+- [ ] **Step 3: 写 physics.js**
+
+`physics.js`：
+
+```js
+window.GD_Physics = (function () {
+  'use strict';
+
+  var CONST = {
+    BLOCK_PX: 30,
+    DT: 1 / 240,
+    G: 115.0,                 // 格/秒²，方块与飞船共用（原版同一硬编码常数）
+    JUMP_V0: 22.36,           // 格/秒
+    FALL_CAP: 30.0,           // 格/秒，15 px/帧
+    ROT_SPEED: 270,           // 度/秒，空中恒速
+    ROT_SNAP: 20,             // 落地吸附到最近 90° 的插值速率
+    LAND_TOL: 0.33,           // 格，10 units
+    SOLID_HB: 0.3,            // 与实心块致用的缩小框边长
+    SPIKE_HB: 0.55,           // 尖刺致死框（自调参项，spec §13.1）
+    DEATH_DELAY: 1.0,
+    SPEEDS: { 0.5: 8.372, 1: 10.386, 2: 12.914, 3: 15.600, 4: 19.200 },
+    SHIP: { UP_A: 46.0, DOWN_A: 55.2, CAP_UP: 16.0, CAP_DOWN: -19.2, CAP_DOWN_HELD: -12.8 },
+    PAD: { pad_pink: 21.08, pad_yellow: 32.28 },
+    RING: { ring_pink: 15.78, ring_yellow: 23.40 }
+  };
+
+  var GROUND = 0;   // 地面线 y=0，向上为正
+
+  function create(level) {
+    return {
+      level: level || { objects: [], meta: { endBlock: 1000 } },
+      x: 0, y: 0, vy: 0, rot: 0,
+      mode: 'cube', speedKey: 1,
+      alive: true, finished: false, deadTimer: 0, attempt: 1,
+      time: 0, onGround: true, percent: 0,
+      used: {}          // 一次性触发物（跳环）已用标记，键为对象下标
+    };
+  }
+
+  function vxOf(st) { return CONST.SPEEDS[st.speedKey] || CONST.SPEEDS[1]; }
+
+  function die(st) {
+    if (!st.alive) return;
+    st.alive = false;
+    st.deadTimer = CONST.DEATH_DELAY;
+  }
+
+  function respawn(st) {
+    st.x = 0; st.y = 0; st.vy = 0; st.rot = 0;
+    st.alive = true; st.finished = false; st.deadTimer = 0;
+    st.attempt += 1; st.time = 0; st.onGround = true; st.percent = 0;
+    st.mode = st.level.segments ? st.level.segments[0].mode : 'cube';
+    st.speedKey = st.level.segments ? st.level.segments[0].speed : 1;
+    st.used = {};
+  }
+
+  // 玩家 AABB：中心 x、底边 y，1×1 格
+  function playerBox(st) {
+    return { x0: st.x - 0.5, x1: st.x + 0.5, y0: st.y, y1: st.y + 1 };
+  }
+  function overlap(a, b) {
+    return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+  }
+  function boxOf(o) {
+    if (o.t === 'block') return { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + 1 };
+    if (o.t === 'spike') {
+      var c = CONST.SPIKE_HB / 2;
+      return { x0: o.x + 0.5 - c, x1: o.x + 0.5 + c, y0: o.y, y1: o.y + CONST.SPIKE_HB };
+    }
+    return { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + 1 };
+  }
+
+  // 只遍历 x 附近的对象；关卡 ~200 个对象，线性扫描足够（不建索引，YAGNI）
+  function near(st) {
+    var out = [], objs = st.level.objects;
+    for (var i = 0; i < objs.length; i++) {
+      if (objs[i].x > st.x - 3 && objs[i].x < st.x + 3) out.push({ i: i, o: objs[i] });
+    }
+    return out;
+  }
+
+  function step(st, held) {
+    if (!st.alive) {
+      st.deadTimer -= CONST.DT;
+      if (st.deadTimer <= 0) respawn(st);
+      return;
+    }
+    if (st.finished) return;
+
+    var dt = CONST.DT;
+    st.time += dt;
+    st.x += vxOf(st) * dt;
+
+    if (st.mode === 'cube') stepCube(st, held, dt);
+    else stepShip(st, held, dt);
+
+    collide(st);
+
+    if (st.alive) {
+      var end = st.level.meta ? st.level.meta.endBlock : 1000;
+      st.percent = Math.min(100, Math.max(0, st.x / end * 100));
+      if (st.x >= end) st.finished = true;
+    }
+  }
+
+  function stepCube(st, held, dt) {
+    if (st.onGround) {
+      if (held) { st.vy = CONST.JUMP_V0; st.onGround = false; }
+      else { st.y = GROUND_Y(st); }
+    }
+    if (!st.onGround) {
+      // velocity-Verlet：对恒定加速度解析精确，不要改成半隐式欧拉
+      st.y += st.vy * dt - 0.5 * CONST.G * dt * dt;
+      st.vy -= CONST.G * dt;
+      if (st.vy < -CONST.FALL_CAP) st.vy = -CONST.FALL_CAP;
+      st.rot += CONST.ROT_SPEED * dt;
+    } else {
+      var target = Math.round(st.rot / 90) * 90;
+      st.rot += (target - st.rot) * Math.min(1, CONST.ROT_SNAP * dt);
+    }
+  }
+
+  function stepShip(st, held, dt) {
+    var S = CONST.SHIP;
+    var a = held ? S.UP_A : -S.DOWN_A;
+    st.y += st.vy * dt + 0.5 * a * dt * dt;
+    st.vy += a * dt;
+    if (st.vy > S.CAP_UP) st.vy = S.CAP_UP;
+    var downCap = held ? S.CAP_DOWN_HELD : S.CAP_DOWN;
+    if (st.vy < downCap) st.vy = downCap;
+    if (st.y < GROUND) { st.y = GROUND; if (st.vy < 0) st.vy = 0; }
+    var target = Math.atan2(st.vy, vxOf(st)) * 180 / Math.PI;
+    st.rot += (target - st.rot) * Math.min(1, 9 * dt);   // 约 0.11 s 追上
+  }
+
+  // 玩家脚下可站立的面（地面或方块顶），考虑容差
+  function GROUND_Y(st) {
+    var best = GROUND, list = near(st);
+    for (var k = 0; k < list.length; k++) {
+      var o = list[k].o;
+      if (o.t !== 'block') continue;
+      if (st.x < o.x - 0.02 || st.x > o.x + 1.02) continue;
+      var top = o.y + 1;
+      if (top <= st.y + CONST.LAND_TOL && top > best) best = top;
+    }
+    return best;
+  }
+
+  function collide(st) {
+    var list = near(st), pb = playerBox(st), i, o;
+
+    for (i = 0; i < list.length; i++) {
+      o = list[i].o;
+      if (o.t === 'spike') {
+        if (overlap(pb, boxOf(o))) { die(st); return; }
+      } else if (o.t === 'block') {
+        if (!overlap(pb, boxOf(o))) continue;
+        var top = o.y + 1;
+        // 从上方压下来 = 落地；否则是撞墙 = 致死（用缩小框判定，spec §4.2）
+        if (st.y >= top - CONST.LAND_TOL && st.vy <= 0) {
+          st.y = top; st.vy = 0; st.onGround = true;
+        } else {
+          var hb = CONST.SOLID_HB / 2;
+          var solid = { x0: o.x + 0.5 - hb, x1: o.x + 0.5 + hb, y0: o.y + 0.5 - hb, y1: o.y + 0.5 + hb };
+          var core = { x0: st.x - hb, x1: st.x + hb, y0: st.y + 0.5 - hb, y1: st.y + 0.5 + hb };
+          if (overlap(core, solid)) { die(st); return; }
+        }
+      } else if (o.t === 'pad_pink' || o.t === 'pad_yellow') {
+        if (overlap(pb, { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + 0.35 })) {
+          st.vy = CONST.PAD[o.t]; st.onGround = false;
+        }
+      } else if (o.t === 'ring_pink' || o.t === 'ring_yellow') {
+        if (st.used[list[i].i]) continue;
+        if (held && overlap({ x0: st.x - 0.5, x1: st.x + 0.5, y0: st.y, y1: st.y + 1 },
+                            { x0: o.x - 0.6, x1: o.x + 1.6, y0: o.y - 0.6, y1: o.y + 1.6 })) {
+          st.vy = CONST.RING[o.t]; st.onGround = false; st.used[list[i].i] = true;
+        }
+      } else if (o.t === 'portal_ship' || o.t === 'portal_cube') {
+        if (overlap(pb, { x0: o.x, x1: o.x + 1.4, y0: o.y, y1: o.y + 2.6 })) {
+          st.mode = o.t === 'portal_ship' ? 'ship' : 'cube';
+          if (st.mode === 'cube') { st.onGround = st.y <= GROUND + CONST.LAND_TOL; st.rot = Math.round(st.rot / 90) * 90; }
+        }
+      } else if (o.t === 'speed_2x' || o.t === 'speed_1x' || o.t === 'speed_3x' || o.t === 'speed_4x') {
+        if (overlap(pb, { x0: o.x, x1: o.x + 1.4, y0: o.y, y1: o.y + 2.6 })) {
+          st.speedKey = { speed_2x: 2, speed_1x: 1, speed_3x: 3, speed_4x: 4 }[o.t];
+        }
+      }
+    }
+
+    if (st.mode === 'cube') {
+      var gy = GROUND_Y(st);
+      if (st.y <= gy && st.vy <= 0) { st.y = gy; st.vy = 0; st.onGround = true; }
+      else if (st.y > gy) { st.onGround = false; }
+      if (st.y <= GROUND) { st.y = GROUND; }
+    }
+  }
+
+  // 供测试用：平地起跳的解析实测
+  function measureJump(speedKey) {
+    var st = create({ objects: [], meta: { endBlock: 100000 } });
+    st.speedKey = speedKey || 1;
+    step(st, true);            // 触发起跳
+    var x0 = st.x, t0 = st.time, apex = st.y, n = 0;
+    st.onGround = false;
+    while (st.alive && st.y > 0 && n < 2000) {
+      step(st, false);
+      if (st.y > apex) apex = st.y;
+      n++;
+    }
+    return { airtime: st.time - t0, apex: apex, span: st.x - x0 };
+  }
+
+  return { CONST: CONST, create: create, step: step, measureJump: measureJump, respawn: respawn };
+})();
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+预期：`pass: 3, fail: 0`（S1、S2、T1）。`loadErrors` 只剩 level.js / replay.js / replay.test.js 三条 404。
+
+**如果 T1 红了**：先看偏差方向和大小。顶点偏低约 2.3% → 说明积分被改回了半隐式欧拉；顶点偏差但滞空正常 → 说明 `G` 或 `JUMP_V0` 被改动。不要靠放宽容差解决。
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 方块物理与跳跃常数
+
+velocity-Verlet 积分，恒定加速度下解析精确，半隐式欧拉会让顶点偏低 2.3%。"
+```
+
+---
+
+## Task 3: 水平速度表（T2）
+
+**Files:**
+- Modify: `tests/physics.test.js`（追加）
+
+- [ ] **Step 1: 写失败的测试**
+
+追加到 `tests/physics.test.js`：
+
+```js
+GD_ASSERT.test('T2 四档门速 1 秒水平位移', function () {
+  var want = { 0.5: 8.372, 1: 10.386, 2: 12.914, 3: 15.600, 4: 19.200 };
+  for (var k in want) {
+    if (!Object.prototype.hasOwnProperty.call(want, k)) continue;
+    var st = GD_Physics.create({ objects: [], meta: { endBlock: 100000 } });
+    st.speedKey = parseFloat(k);
+    for (var i = 0; i < 240; i++) GD_Physics.step(st, false);
+    GD_ASSERT.approx(st.x, want[k], 0.02, k + 'x 速度');
+  }
+});
+
+GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
+  var m1 = GD_Physics.measureJump(1), m2 = GD_Physics.measureJump(2);
+  GD_ASSERT.approx(m2.span / m1.span, 1.243, 0.03, '跳距倍率');
+  GD_ASSERT.approx(m2.airtime / m1.airtime, 1.023, 0.05, '滞空几乎不随速度变');
+});
+```
+
+- [ ] **Step 2: 跑测试**
+
+预期：**直接通过**（`SPEEDS` 表在 Task 2 已写入）。这一步的意义是把"门上的数字是名义标签不是真实倍率"这个反直觉事实钉进回归测试——将来谁把它改成 `speed * multiplier` 就会红。
+
+若 `T2b` 的滞空比值红：说明 `SPEEDS` 被改成了线性倍率。对照 spec §4.1 表格恢复。
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 速度表回归，锁定 2x 门实为 1.243 倍"
+```
+
+---
+
+## Task 4: 判定、尖刺与死亡重开（T5）
+
+**Files:**
+- Modify: `tests/physics.test.js`（追加）
+
+- [ ] **Step 1: 写失败的测试**
+
+```js
+GD_ASSERT.test('T5a 撞尖刺死亡并从 0% 重开', function () {
+  var st = GD_Physics.create({ objects: [{ x: 8, y: 0, t: 'spike' }], meta: { endBlock: 1000 } });
+  var steps = 0;
+  while (st.alive && steps < 240 * 5) { GD_Physics.step(st, false); steps++; }
+  GD_ASSERT.ok(!st.alive, '应已死亡');
+  for (var i = 0; i < 240; i++) GD_Physics.step(st, false);   // 跨过 1.0 s 延迟
+  GD_ASSERT.ok(st.alive, '1 秒后应自动重开');
+  GD_ASSERT.near(st.x, 0, 0.05, '重开位置');
+  GD_ASSERT.ok(st.attempt === 2, 'attempt 应为 2，实为 ' + st.attempt);
+});
+
+GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
+  function trial(wallH) {
+    var objs = [];
+    for (var i = 0; i < wallH; i++) objs.push({ x: 6, y: i, t: 'block' });
+    var st = GD_Physics.create({ objects: objs, meta: { endBlock: 1000 } });
+    // 在墙前 4 格起跳：x=2 时跳，跳距 4.04 正好落在 x=6.04 的墙顶
+    for (var s = 0; s < 240 * 2; s++) GD_Physics.step(st, st.x < 2.0 && !st.jumped ? (st.jumped = true, true) : false);
+    return st.alive;
+  }
+  GD_ASSERT.ok(trial(2) === true, '2 格墙应能跳过');
+  GD_ASSERT.ok(trial(3) === false, '3 格墙应撞死');
+});
+
+GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
+  var st = GD_Physics.create({ objects: [], meta: { endBlock: 1000 } });
+  GD_Physics.step(st, true);
+  var minY = 99, bounced = 0, prevGround = true;
+  for (var i = 0; i < 240 * 3; i++) {
+    GD_Physics.step(st, true);
+    if (st.onGround && !prevGround) bounced++;
+    prevGround = st.onGround;
+    if (st.y < minY) minY = st.y;
+  }
+  GD_ASSERT.near(minY, 0, 0.001, '不应穿地');
+  GD_ASSERT.ok(bounced >= 2, '长按应自动连跳，实际连跳 ' + bounced + ' 次');
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败或通过**
+
+预期 `T5a`/`T5c` 通过（Task 2 已实现死亡与长按），`T5b` 可能因起跳时机不准而失败。**这是本任务要修的点**：`trial()` 里的起跳时机需要按实测跳距 4.02~4.06 格微调——把 `st.x < 2.0` 改成 `st.x < 6.0 - 4.02`（即 1.98）。若仍不稳，改为在 `st.x >= 6.0 - m.span` 时起跳，`m = GD_Physics.measureJump(1)`，让测试自己适应实现而不是反过来。
+
+- [ ] **Step 3: 修测试的起跳时机**
+
+```js
+GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
+  var span = GD_Physics.measureJump(1).span;      // 用实测跳距，不硬编码
+  function trial(wallH) {
+    var objs = [];
+    for (var i = 0; i < wallH; i++) objs.push({ x: 6, y: i, t: 'block' });
+    var st = GD_Physics.create({ objects: objs, meta: { endBlock: 1000 } });
+    var jumped = false;
+    for (var s = 0; s < 240 * 2 && st.alive; s++) {
+      var want = !jumped && st.x >= 6 - span && st.onGround;
+      if (want) jumped = true;
+      GD_Physics.step(st, want);
+    }
+    return st.alive;
+  }
+  GD_ASSERT.ok(trial(2) === true, '2 格墙应能跳过');
+  GD_ASSERT.ok(trial(3) === false, '3 格墙应撞死');
+});
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+预期：`pass: 8, fail: 0`（S1 S2 T1 T2 T2b T5a T5b T5c）。
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 尖刺致死、墙体判定与死亡重开回归"
+```
+
+---
+
+## Task 5: 关卡数据 Crossbeat
+
+**Files:**
+- Create: `level.js`
+- Modify: `tests/physics.test.js`（追加校验测试）
+
+- [ ] **Step 1: 写校验测试**
+
+追加到 `tests/physics.test.js`：
+
+```js
+GD_ASSERT.test('L1 关卡数据自洽', function () {
+  var errs = GD_Level.validate(GD_Level.crossbeat);
+  GD_ASSERT.ok(errs.length === 0, '校验错误: ' + errs.join(' | '));
+});
+
+GD_ASSERT.test('L2 段落时长合计 32.0 秒', function () {
+  var lv = GD_Level.crossbeat, t = 0, S = GD_Physics.CONST.SPEEDS;
+  for (var i = 0; i < lv.segments.length; i++) {
+    var sg = lv.segments[i];
+    t += (sg.to - sg.from) / S[sg.speed];
+  }
+  GD_ASSERT.approx(t, 32.0, 0.02, '总时长秒');
+});
+
+GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
+  var lv = GD_Level.crossbeat, objs = lv.objects, end = lv.meta.endBlock;
+  for (var i = 0; i < objs.length; i++) {
+    GD_ASSERT.ok(objs[i].x >= 0 && objs[i].x <= end, '对象越界: ' + objs[i].t + '@' + objs[i].x);
+  }
+  var hazards = objs.filter(function (o) { return o.t === 'spike'; });
+  for (var a = 0; a < hazards.length; a++) {
+    for (var b = 0; b < hazards.length; b++) {
+      if (a !== b && Math.abs(hazards[a].x - hazards[b].x) < 0.9 && hazards[a].y === hazards[b].y) {
+        throw new Error('尖刺重叠 @' + hazards[a].x);
+      }
+    }
+  }
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+预期：三条都 `GD_Level is not defined`。
+
+- [ ] **Step 3: 写 level.js**
+
+`level.js`——段落与 spec §7 一一对应。对象坐标按"一次跳 = 4.02 格"的时间网格摆放，间距取拍数（154 BPM，一拍 0.3896 s，@1x 一拍走 4.046 格）：
+
+```js
+window.GD_Level = (function () {
+  var BPM = 154;
+  var BEAT_BLOCKS_1X = 10.386 * (60 / BPM);   // 4.046 格 = 一拍
+
+  function spikeRun(startX, count, y) {
+    var a = [];
+    for (var i = 0; i < count; i++) a.push({ x: startX + i, y: y || 0, t: 'spike' });
+    return a;
+  }
+  function pillar(x, h) {
+    var a = [];
+    for (var i = 0; i < h; i++) a.push({ x: x, y: i, t: 'block' });
+    return a;
+  }
+
+  var objects = [].concat(
+    // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍
+    spikeRun(14, 1),
+    spikeRun(22, 1),
+    spikeRun(30, 2),
+
+    // 推进 40–110：柱阵 + 环 + 跳板
+    pillar(42, 2),
+    spikeRun(48, 1),
+    { x: 52, y: 2.0, t: 'ring_pink' },
+    pillar(58, 2),
+    spikeRun(64, 2),
+    { x: 70, y: 0, t: 'pad_pink' },
+    spikeRun(74, 1, 0), spikeRun(75, 1, 0),
+    pillar(82, 3),
+    { x: 88, y: 2.4, t: 'ring_yellow' },
+    spikeRun(94, 2),
+    pillar(100, 2),
+    spikeRun(106, 1),
+
+    // 切船 110–118
+    { x: 112, y: 0.5, t: 'portal_ship' },
+    { x: 116, y: 0.5, t: 'speed_2x' },
+
+    // 飞行 118–250：上下柱阵通道。@2x 一拍走 12.914*0.3896 = 5.03 格
+    // 通道净空 4 格，玩家 1 格，容错 3 格
+    pillar(126, 4), { x: 126, y: 8, t: 'block' }, { x: 126, y: 9, t: 'block' }, { x: 126, y: 10, t: 'block' },
+    { x: 134, y: 0, t: 'block' }, { x: 134, y: 1, t: 'block' }, { x: 134, y: 7, t: 'block' }, { x: 134, y: 8, t: 'block' },
+    pillar(142, 5), { x: 142, y: 9, t: 'block' }, { x: 142, y: 10, t: 'block' },
+    { x: 150, y: 0, t: 'block' }, { x: 150, y: 1, t: 'block' }, { x: 150, y: 2, t: 'block' }, { x: 150, y: 8, t: 'block' },
+    pillar(158, 3), { x: 158, y: 9, t: 'block' },
+    { x: 166, y: 0, t: 'block' }, { x: 166, y: 1, t: 'block' }, { x: 166, y: 7, t: 'block' }, { x: 166, y: 8, t: 'block' },
+    pillar(174, 6), { x: 174, y: 10, t: 'block' },
+    { x: 182, y: 0, t: 'block' }, { x: 182, y: 6, t: 'block' }, { x: 182, y: 7, t: 'block' },
+    pillar(190, 4), { x: 190, y: 9, t: 'block' }, { x: 190, y: 10, t: 'block' },
+    { x: 198, y: 0, t: 'block' }, { x: 198, y: 1, t: 'block' }, { x: 198, y: 8, t: 'block' },
+    pillar(206, 5), { x: 206, y: 10, t: 'block' },
+    { x: 214, y: 0, t: 'block' }, { x: 214, y: 2, t: 'block' }, { x: 214, y: 7, t: 'block' },
+    pillar(222, 3), { x: 222, y: 8, t: 'block' }, { x: 222, y: 9, t: 'block' },
+    { x: 230, y: 0, t: 'block' }, { x: 230, y: 1, t: 'block' }, { x: 230, y: 9, t: 'block' },
+    pillar(238, 4), { x: 238, y: 10, t: 'block' },
+
+    // 回方块 254：门与降速同点，段落边界与传送门位置严格一致
+    { x: 253, y: 1.0, t: 'portal_cube' },
+    { x: 254, y: 1.0, t: 'speed_1x' },
+
+    // 收尾 258–360：密集节奏段
+    spikeRun(264, 1),
+    spikeRun(272, 2),
+    pillar(280, 2),
+    spikeRun(286, 1), { x: 288, y: 2.0, t: 'ring_pink' },
+    spikeRun(294, 2),
+    { x: 300, y: 0, t: 'pad_pink' },
+    spikeRun(304, 1), spikeRun(305, 1),
+    pillar(312, 2),
+    spikeRun(318, 2),
+    pillar(324, 3),
+    spikeRun(330, 1),
+    { x: 334, y: 2.4, t: 'ring_yellow' },
+    spikeRun(340, 3),
+    { x: 352, y: 0, t: 'finish' }
+  );
+
+  var crossbeat = {
+    meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360, beatBlocks1x: BEAT_BLOCKS_1X },
+    segments: [
+      { from: 0,   to: 110, mode: 'cube', speed: 1, theme: 'blue'   },   // 10.591 s
+      { from: 110, to: 118, mode: 'cube', speed: 1, theme: 'blue'   },   //  0.770 s  切船过渡
+      { from: 118, to: 254, mode: 'ship', speed: 2, theme: 'violet' },   // 10.531 s
+      { from: 254, to: 360, mode: 'cube', speed: 1, theme: 'blue'   }    // 10.206 s
+    ],
+    // 合计 32.098 s，落在 L2 测试的 32.0 ± 2% 容差内
+    objects: objects
+  };
+
+  var VALID_TYPES = ['spike', 'block', 'pad_pink', 'pad_yellow', 'ring_pink', 'ring_yellow',
+                     'portal_ship', 'portal_cube', 'speed_1x', 'speed_2x', 'speed_3x', 'speed_4x', 'finish'];
+
+  function validate(lv) {
+    var errs = [];
+    if (!lv.meta) errs.push('缺 meta');
+    if (!Array.isArray(lv.objects)) errs.push('缺 objects 数组');
+    if (!Array.isArray(lv.segments)) errs.push('缺 segments 数组');
+    if (lv.meta && typeof lv.meta.endBlock !== 'number') errs.push('meta.endBlock 非数字');
+    if (lv.objects) {
+      for (var i = 0; i < lv.objects.length; i++) {
+        var o = lv.objects[i];
+        if (typeof o.x !== 'number' || typeof o.y !== 'number') errs.push('对象缺 x/y: #' + i);
+        if (VALID_TYPES.indexOf(o.t) < 0) errs.push('未知类型: ' + o.t + ' #' + i);
+      }
+    }
+    if (lv.segments) {
+      for (var s = 0; s < lv.segments.length; s++) {
+        var sg = lv.segments[s];
+        if (['cube', 'ship'].indexOf(sg.mode) < 0) errs.push('非法 mode: ' + sg.mode);
+        if (typeof sg.from !== 'number' || typeof sg.to !== 'number') errs.push('段落缺 from/to #' + s);
+      }
+    }
+    return errs;
+  }
+
+  return { crossbeat: crossbeat, validate: validate, VALID_TYPES: VALID_TYPES };
+})();
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+预期：`pass: 11, fail: 0`。
+
+若 `L2` 红：段落 `from/to/speed` 与上表注释不一致，按注释修。
+
+**与 spec §7 的偏差（有意为之）**：§7 的表格把关卡切成 6 段，其中"切船 110–118""回方块 250–258"是描述性的过渡区间，没有独立的 mode/speed。这里压成 4 段，让**段落边界与传送门 x 坐标严格相等**（118 与 254），否则 `replay.js` 的 `tOf()` 分段积分会和物理实际走的轨迹对不上。总时长 32.098 s，仍在 §7 的 32.0 s ±2% 内。
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add level.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: Crossbeat 关卡数据与校验
+
+障碍按 154 BPM 的时间网格摆放，一次跳跃 = 一拍。"
+```
+
+---
+
+## Task 6: 跳板与跳环（含 T2 已覆盖的常数）
+
+**Files:**
+- Modify: `tests/physics.test.js`（追加）
+
+- [ ] **Step 1: 写测试**
+
+```js
+GD_ASSERT.test('P1 跳板/跳环可达高度符合 spec §4.3', function () {
+  function apexOf(setVy, obj) {
+    var st = GD_Physics.create({ objects: [obj], meta: { endBlock: 100000 } });
+    // 先跑到跳板位置
+    var guard = 0;
+    while (st.x < obj.x - 0.2 && guard++ < 240 * 10) GD_Physics.step(st, false);
+    // 跳板：接触自动触发；环：需要 held
+    var apex = 0, g2 = 0;
+    while (st.alive && g2++ < 240 * 3) {
+      GD_Physics.step(st, obj.t.indexOf('ring') === 0 ? true : false);
+      if (st.y > apex) apex = st.y;
+      if (st.onGround && g2 > 24) break;
+    }
+    return apex;
+  }
+  GD_ASSERT.approx(apexOf(null, { x: 5, y: 0, t: 'pad_pink' }), 1.933, 0.05, '粉跳板高度');
+  GD_ASSERT.approx(apexOf(null, { x: 5, y: 2.4, t: 'ring_pink' }), 1.083 + 2.4, 0.08, '粉环相对高度');
+  GD_ASSERT.approx(apexOf(null, { x: 5, y: 2.4, t: 'ring_yellow' }), 2.383 + 2.4, 0.08, '黄环相对高度');
+});
+
+GD_ASSERT.test('P2 跳环只能触发一次', function () {
+  var st = GD_Physics.create({ objects: [{ x: 5, y: 2.4, t: 'ring_pink' }], meta: { endBlock: 100000 } });
+  var triggers = 0, prevVy = 0;
+  var guard = 0;
+  while (st.x < 4.5 && guard++ < 240 * 10) GD_Physics.step(st, false);
+  for (var i = 0; i < 240; i++) {
+    GD_Physics.step(st, true);
+    if (st.vy - prevVy > 5) triggers++;
+    prevVy = st.vy;
+  }
+  GD_ASSERT.ok(triggers <= 1, '跳环触发 ' + triggers + ' 次，应 ≤ 1');
+});
+```
+
+- [ ] **Step 2: 跑测试**
+
+预期：`P1` 可能因触发时机不准而偏差；`P2` 通过。若 `P1` 的粉跳板偏低超过 5%，检查 `collide()` 里跳板的 y 区间 `o.y + 0.35` 是否让高速下坠时漏触发——把触发判定改成"本帧跨过"而非"重叠"：
+
+```js
+// 替换 pad 分支
+var wasY = st.y - st.vy * CONST.DT;
+if (st.x + 0.5 > o.x && st.x - 0.5 < o.x + 1 && wasY >= o.y + 0.35 && st.y <= o.y + 0.35 && st.vy <= 0) {
+  st.vy = CONST.PAD[o.t]; st.onGround = false;
+}
+```
+
+- [ ] **Step 3: 跑测试确认通过**
+
+预期：`pass: 13, fail: 0`。
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 跳板与跳环触发，含单次触发约束"
+```
+
+---
+
+## Task 7: 飞船模式（T4）
+
+**Files:**
+- Modify: `tests/physics.test.js`（追加）
+
+- [ ] **Step 1: 写测试**
+
+```js
+GD_ASSERT.test('T4 飞船速度上限钳制', function () {
+  function shipVy(held, seconds) {
+    var st = GD_Physics.create({ objects: [], meta: { endBlock: 100000 } });
+    st.mode = 'ship'; st.y = 5;
+    for (var i = 0; i < 240 * seconds; i++) GD_Physics.step(st, held);
+    return st.vy;
+  }
+  GD_ASSERT.approx(shipVy(true, 2), 16.0, 0.02, '按住 2 秒收敛到 +16.0');
+  GD_ASSERT.approx(shipVy(false, 2), -19.2, 0.02, '松开 2 秒收敛到 -19.2');
+});
+
+GD_ASSERT.test('T4b 飞船水平速度与方块模式完全相同', function () {
+  function run(mode) {
+    var st = GD_Physics.create({ objects: [], meta: { endBlock: 100000 } });
+    st.mode = mode; st.speedKey = 2;
+    for (var i = 0; i < 240; i++) GD_Physics.step(st, false);
+    return st.x;
+  }
+  GD_ASSERT.near(run('ship'), run('cube'), 0.001, '同 1 秒水平位移');
+});
+
+GD_ASSERT.test('T4c 传送门切换模式', function () {
+  var st = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_ship' }, { x: 30, y: 1, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+  });
+  st.y = 1;
+  for (var i = 0; i < 240 * 4 && st.alive; i++) { GD_Physics.step(st, false); st.y = Math.max(st.y, 0); }
+  GD_ASSERT.ok(st.mode === 'ship', '过第一个门应为 ship，实为 ' + st.mode);
+  for (var j = 0; j < 240 * 3 && st.alive; j++) GD_Physics.step(st, false);
+  GD_ASSERT.ok(st.mode === 'cube', '过第二个门应回 cube，实为 ' + st.mode);
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+预期：`T4` 通过（Task 2 已实现 `stepShip`），`T4c` 可能因 `segments` 缺失导致 respawn 出错。
+
+- [ ] **Step 3: 修 respawn 的段依赖**
+
+`physics.js` 的 `respawn()` 里，`st.level.segments` 可能为 undefined（测试里传空对象）。加默认值：
+
+```js
+var sg = st.level.segments && st.level.segments[0];
+st.mode = sg ? sg.mode : 'cube';
+st.speedKey = sg ? sg.speed : 1;
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+预期：`pass: 16, fail: 0`。
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 飞船模式与传送门切换，锁定水平速度与方块一致"
+```
+
+---
+
+## Task 8: 随机稳定性（T6）与架构约束（D1）
+
+**Files:**
+- Modify: `tests/physics.test.js`（追加 T6 / T6b / D1）
+- Modify: `tests/assert.js`（追加 `SOURCES` 预取）
+- Modify: `tests/harness.html`（末尾脚本改为等预取完成再 run）
+
+- [ ] **Step 1: 写测试**
+
+```js
+GD_ASSERT.test('T6 随机输入 3000 步无异常无 NaN', function () {
+  var seed = 12345;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  for (var i = 0; i < 3000; i++) {
+    GD_Physics.step(st, rnd() < 0.35);
+    if (!isFinite(st.x) || !isFinite(st.y) || !isFinite(st.vy)) {
+      throw new Error('NaN/Inf @step ' + i + ' x=' + st.x + ' y=' + st.y + ' vy=' + st.vy);
+    }
+    if (st.y < -0.001) throw new Error('穿地 @step ' + i + ' y=' + st.y);
+    if (st.percent < 0 || st.percent > 100) throw new Error('percent 越界: ' + st.percent);
+  }
+  GD_ASSERT.ok(true);
+});
+
+GD_ASSERT.test('T6b 死亡重开 20 次状态干净', function () {
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  for (var i = 0; i < 240 * 60; i++) GD_Physics.step(st, false);   // 一直不按，必然撞刺
+  GD_ASSERT.ok(st.attempt >= 2, '应至少重开一次，attempt=' + st.attempt);
+  GD_ASSERT.near(st.x, 0, 12, '重开后应仍在开局附近，实为 ' + st.x);
+});
+
+// spec §5 的架构约束：physics.js 不得引用渲染/输入/音频/HUD。
+// 这条不是洁癖——它保证物理能在 harness.html 里不加载任何渲染代码就被驱动到任意时刻。
+GD_ASSERT.test('D1 physics.js 不依赖渲染层', function () {
+  var src = GD_ASSERT.SOURCES['physics.js'];
+  GD_ASSERT.ok(src !== undefined, '需要 harness 预取的源码字符串');
+  ['GD_Render', 'GD_Hud', 'GD_Audio', 'GD_Input', 'document.', 'window.addEventListener',
+   'requestAnimationFrame', 'canvas'].forEach(function (bad) {
+    GD_ASSERT.ok(src.indexOf(bad) < 0, 'physics.js 不应出现 ' + bad);
+  });
+});
+```
+
+`tests/assert.js` 需要加源码预取（Task 1 已建文件，本步补上）：
+
+```js
+GD_ASSERT.SOURCES = {};
+(function () {
+  var files = ['../physics.js', '../level.js', '../render.js', '../hud.js', '../input.js', '../audio.js'];
+  files.forEach(function (f) {
+    fetch(f).then(function (r) { return r.text(); })
+      .then(function (t) { GD_ASSERT.SOURCES[f.replace('../', '')] = t; });
+  });
+})();
+```
+
+`harness.html` 的 `GD_ASSERT.run()` 调用前需等预取完成——把末尾脚本改为：
+
+```js
+  var waited = 0;
+  (function wait() {
+    if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
+      var res = GD_ASSERT.run();
+      res.loadErrors = window.__LOAD_ERRORS__ || [];
+      res.sources = Object.keys(GD_ASSERT.SOURCES);
+      document.getElementById('out').textContent = JSON.stringify(res, null, 1);
+      return;
+    }
+    waited++; setTimeout(wait, 25);
+  })();
+```
+
+- [ ] **Step 2: 跑测试确认通过**
+
+预期：`pass: 19, fail: 0`。若 `T6b` 的 x 越界，说明 `respawn()` 漏了某个字段——对照 `create()` 逐字段检查。
+
+`D1` 在此任务时 `render.js`/`hud.js`/`input.js`/`audio.js` 还不存在，预取只会拿到 2 个源文件——预取的 `waited > 40` 超时兜底正是为此而写，D1 检查的 `physics.js` 已就位，不受影响。
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 随机输入稳定性、重开清洁度与 physics 层依赖约束"
+```
+
+---
+
+## Task 9: 渲染静态场景
+
+**Files:**
+- Create: `render.js`
+
+渲染层难以做无头断言，本任务的验证方式是**截图对比**（Step 4）。物理正确性已由 T1–T6 保证，这里只验"画面对不对"。
+
+- [ ] **Step 1: 写 render.js**
+
+`render.js`：
+
+```js
+window.GD_Render = (function () {
+  'use strict';
+
+  var LW = 427, LH = 240, BLK = 30;
+  var GROUND_Y = LH - 2.2 * BLK;          // spec §8：地面线离底 2.2 格
+  var ANCHOR_X = LW / 2 - 60;             // 玩家锚点
+
+  var THEME = {
+    blue:   { far: '#0e4c95', mid: '#1157a8', near: '#0a4184', ground: '#062a52', deep: '#041f3c', line: '#7fe4ff', fill: '#05213d' },
+    violet: { far: '#3b1470', mid: '#4c1d95', near: '#2b0d57', ground: '#1b0840', deep: '#120530', line: '#c4a6ff', fill: '#150433' }
+  };
+
+  function create(canvas) {
+    var ctx = canvas.getContext('2d');
+    // wasAlive 必须是实例字段而非模块级变量，否则多实例/重开测试会串状态
+    return { canvas: canvas, ctx: ctx, parts: [], debris: [], wasAlive: true };
+  }
+
+  function resize(canvas) {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var availW = Math.max(320, window.innerWidth - 16);
+    var availH = Math.max(180, window.innerHeight - 16);
+    var k = Math.max(1, Math.floor(Math.min(availW / LW, availH / LH)));
+    canvas.style.width = (LW * k) + 'px';
+    canvas.style.height = (LH * k) + 'px';
+    canvas.width = Math.round(LW * k * dpr);
+    canvas.height = Math.round(LH * k * dpr);
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    return k;
+  }
+
+  function themeOf(st) {
+    var segs = st.level.segments || [];
+    for (var i = 0; i < segs.length; i++) if (st.x >= segs[i].from && st.x < segs[i].to) return THEME[segs[i].theme] || THEME.blue;
+    return THEME.blue;
+  }
+
+  function rect(ctx, x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); }
+  function wx(st, blockX) { return (blockX - st.x) * BLK + ANCHOR_X; }
+  function wy(blockY) { return GROUND_Y - blockY * BLK; }
+
+  function background(ctx, st) {
+    var C = themeOf(st);
+    rect(ctx, 0, 0, LW, LH, C.far);
+    var off = (st.x * BLK * 0.35) % 260;
+    ctx.fillStyle = C.mid;
+    for (var i = -1; i < 4; i++) for (var j = 0; j < 3; j++) ctx.fillRect(i * 260 - off - 60, 10 + j * 78, 190, 58);
+    off = (st.x * BLK * 0.6) % 200;
+    ctx.fillStyle = C.near;
+    for (var k = -1; k < 4; k++) ctx.fillRect(k * 200 - off, 120, 130, 50);
+    return C;
+  }
+
+  function ground(ctx, st, C) {
+    rect(ctx, 0, GROUND_Y, LW, LH - GROUND_Y, C.ground);
+    var off = (st.x * BLK) % 60;
+    ctx.fillStyle = C.deep;
+    for (var k = -1; k < 9; k++) ctx.fillRect(k * 60 - off, GROUND_Y + 8, 44, LH - GROUND_Y);
+    rect(ctx, 0, GROUND_Y - 1, LW, 2, C.line);
+  }
+
+  function block(ctx, st, x, y, C) {
+    var px = wx(st, x), py = wy(y + 1);
+    rect(ctx, px, py, BLK, BLK, C.fill);
+    rect(ctx, px, py, BLK, 2, C.line);
+    rect(ctx, px, py, 2, BLK, C.line);
+    ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2; ctx.strokeRect(px + 1, py + 1, BLK - 2, BLK - 2);
+  }
+
+  function spike(ctx, st, x, y, C) {
+    var px = wx(st, x), py = wy(y);
+    ctx.fillStyle = C.fill; ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + BLK, py); ctx.lineTo(px + BLK / 2, py - BLK); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  }
+
+  function portal(ctx, st, x, y, color, glyph) {
+    var px = wx(st, x), py = wy(y + 2.6), w = 1.4 * BLK, h = 2.6 * BLK;
+    ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2;
+    ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(px, py, w, h);
+    ctx.strokeStyle = color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(px + w / 2, py + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(glyph, px + w / 2, py + h / 2 + 3);
+    ctx.textAlign = 'left';
+  }
+
+  function objects(ctx, st, C) {
+    var objs = st.level.objects;
+    for (var i = 0; i < objs.length; i++) {
+      var o = objs[i];
+      var sx = wx(st, o.x);
+      if (sx < -BLK * 2 || sx > LW + BLK * 2) continue;
+      if (o.t === 'block') block(ctx, st, o.x, o.y, C);
+      else if (o.t === 'spike') spike(ctx, st, o.x, o.y, C);
+      else if (o.t === 'pad_pink' || o.t === 'pad_yellow') {
+        rect(ctx, sx, wy(o.y) - 5, BLK, 5, o.t === 'pad_pink' ? '#ff5fa8' : '#ffd23f');
+      }
+      else if (o.t === 'ring_pink' || o.t === 'ring_yellow') {
+        ctx.strokeStyle = o.t === 'ring_pink' ? '#ff5fa8' : '#ffd23f'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(sx + BLK / 2, wy(o.y + 0.5), BLK * 0.45, 0, Math.PI * 2); ctx.stroke();
+      }
+      else if (o.t === 'portal_ship') portal(ctx, st, o.x, o.y, '#ff8a3d', '▲▼');
+      else if (o.t === 'portal_cube') portal(ctx, st, o.x, o.y, '#3dd6ff', '■');
+      else if (o.t.indexOf('speed_') === 0) portal(ctx, st, o.x, o.y, '#7cff5f', '»');
+      else if (o.t === 'finish') {
+        rect(ctx, sx, wy(0) - 180, 4, 180, '#ffe14d');
+        rect(ctx, sx + 4, wy(0) - 180, 26, 14, '#ffe14d');
+      }
+    }
+  }
+
+  function player(ctx, st) {
+    var px = wx(st, st.x), py = wy(st.y + 1);
+    ctx.save();
+    ctx.translate(px + BLK / 2, py + BLK / 2);
+    ctx.rotate(st.rot * Math.PI / 180);
+    var s = BLK;
+    rect(ctx, -s / 2, -s / 2, s, s, '#0b1b2a');
+    rect(ctx, -s / 2 + 3, -s / 2 + 3, s - 6, s - 6, '#4cd137');
+    rect(ctx, -s / 2 + 7, -s / 2 + 7, 6, 6, '#0b1b2a');
+    rect(ctx, s / 2 - 13, -s / 2 + 7, 6, 6, '#0b1b2a');
+    rect(ctx, -s / 2 + 8, s / 2 - 13, s - 16, 5, '#0b1b2a');
+    ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2; ctx.strokeRect(-s / 2, -s / 2, s, s);
+    ctx.restore();
+  }
+
+  function emitTrail(r, st) {
+    if (!st.alive) return;
+    r.parts.push({ x: st.x - 0.35, y: st.y + 0.15, a: 1, c: '#7fe4ff', s: 5 });
+    if (r.parts.length > 200) r.parts.splice(0, r.parts.length - 200);
+  }
+
+  function emitDebris(r, st) {
+    for (var i = 0; i < 22; i++) {
+      r.debris.push({
+        x: st.x, y: st.y + 0.5,
+        vx: (Math.random() - 0.5) * 14, vy: Math.random() * 16,
+        a: 1, c: i % 2 ? '#4cd137' : '#7fe4ff', s: 3 + Math.random() * 4
+      });
+    }
+  }
+
+  function particles(ctx, r, st, dt) {
+    var i, p;
+    for (i = r.parts.length - 1; i >= 0; i--) {
+      p = r.parts[i]; p.a -= dt * 2.0;
+      if (p.a <= 0) { r.parts.splice(i, 1); continue; }
+      ctx.globalAlpha = p.a * 0.5; rect(ctx, wx(st, p.x), wy(p.y) - p.s, p.s, p.s, p.c);
+    }
+    for (i = r.debris.length - 1; i >= 0; i--) {
+      p = r.debris[i]; p.a -= dt * 1.6; p.vy -= 60 * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.a <= 0) { r.debris.splice(i, 1); continue; }
+      ctx.globalAlpha = p.a; rect(ctx, wx(st, p.x), wy(p.y), p.s, p.s, p.c);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function draw(r, st, dt) {
+    var ctx = r.ctx;
+    if (r.wasAlive && !st.alive) emitDebris(r, st);
+    r.wasAlive = st.alive;
+    emitTrail(r, st);
+    ctx.clearRect(0, 0, LW, LH);
+    var C = background(ctx, st);
+    objects(ctx, st, C);
+    ground(ctx, st, C);
+    particles(ctx, r, st, dt);
+    if (st.alive) player(ctx, st);
+  }
+
+  return { create: create, resize: resize, draw: draw, LW: LW, LH: LH, BLK: BLK, GROUND_Y: GROUND_Y };
+})();
+```
+
+`create()` 的 `wasAlive` 已在上面定义，无需额外处理。
+
+- [ ] **Step 2: 起服务，用一次性调试页截图**
+
+创建 `tests/visual-smoke.html`（临时文件，不进最终交付）：
+
+```html
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>visual smoke</title>
+<style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh}</style>
+</head><body><canvas id="c"></canvas>
+<script src="../level.js"></script><script src="../physics.js"></script><script src="../render.js"></script>
+<script>
+var cv = document.getElementById('c');
+var r = GD_Render.create(cv); GD_Render.resize(cv);
+var st = GD_Physics.create(GD_Level.crossbeat);
+for (var i = 0; i < 240 * 3; i++) GD_Physics.step(st, i % 60 < 20);
+GD_Render.draw(r, st, 1/60);
+</script></body></html>
+```
+
+- [ ] **Step 3: 跑 3 秒物理后截图**
+
+`navigate_page` 到 `http://127.0.0.1:8765/tests/visual-smoke.html`，然后 `take_screenshot`。
+
+- [ ] **Step 4: 人工核对截图**
+
+必须看到（缺一项就修 render.js）：
+
+1. 三层蓝色系背景，色块随 x 位移（视差）。
+2. 地面线是一条 2px 亮线，离画布底部约 2.2 格，下方是压暗的纵向色带。
+3. 尖刺是白描边、内部近黑的等腰三角形，底宽=高=1 格。
+4. 方块有顶/左亮带 + 白描边。
+5. 玩家是绿色方块图标，两只方眼 + 一条横嘴，带旋转角。
+6. 玩家 x 位置在画布中线偏左（锚点 5.12 格处），不是画布正中。
+7. 身后有渐隐的青色拖尾。
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add render.js tests/visual-smoke.html && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 渲染层，三层视差背景与自绘同风格素材"
+```
+
+---
+
+## Task 10: HUD
+
+**Files:**
+- Create: `hud.js`
+
+- [ ] **Step 1: 写 hud.js**
+
+`hud.js`：
+
+```js
+window.GD_Hud = (function () {
+  var LW = 427, LH = 240;
+
+  function draw(ctx, st, fps) {
+    ctx = ctx.ctx !== undefined ? ctx.ctx : ctx;      // 兼容传 render 句柄
+    ctx.font = '8px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    ctx.fillText(Math.round(fps) + ' FPS', 3, 10);
+
+    // Attempt 跟随世界滚动
+    var ax = (2 - st.x) * 30 + 213;
+    if (ax > -80 && ax < LW) ctx.fillText('Attempt ' + st.attempt, ax, 170 - 3 * 30);
+
+    // 进度条
+    var bw = 340, bx = (LW - bw) / 2, by = LH - 14;
+    ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(bx, by, bw, 7);
+    ctx.fillStyle = '#4cd137'; ctx.fillRect(bx, by, bw * st.percent / 100, 7);
+    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, 6);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.fillText(Math.floor(st.percent) + '%', LW / 2, by - 3);
+    ctx.textAlign = 'left';
+
+    if (st.finished) {
+      ctx.fillStyle = '#ffe14d'; ctx.font = '16px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('100%', LW / 2, LH / 2); ctx.textAlign = 'left';
+    } else if (!st.alive) {
+      ctx.fillStyle = 'rgba(255,90,90,.9)'; ctx.font = '13px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('DEAD', LW / 2, LH / 2); ctx.textAlign = 'left';
+    }
+  }
+
+  return { draw: draw };
+})();
+```
+
+- [ ] **Step 2: 在 visual-smoke.html 里加上 hud.js 并截图核对**
+
+`navigate_page` 重新加载后 `take_screenshot`。必须看到左上角 FPS、底部居中进度条带百分比数字、开局处 "Attempt 1"。
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add hud.js tests/visual-smoke.html && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: HUD，FPS / Attempt / 进度条"
+```
+
+---
+
+## Task 11: 输入、音频、装配（双击即玩）
+
+**Files:**
+- Create: `input.js`, `audio.js`, `main.js`, `index.html`
+
+- [ ] **Step 1: 写 input.js**
+
+```js
+window.GD_Input = (function () {
+  var held = false;
+  function set(v) { held = v; }
+  function create(target) {
+    target.addEventListener('pointerdown', function (e) { e.preventDefault(); set(true); });
+    window.addEventListener('pointerup', function () { set(false); });
+    window.addEventListener('pointercancel', function () { set(false); });
+    window.addEventListener('keydown', function (e) {
+      if (e.code === 'Space' || e.key === ' ') { e.preventDefault(); set(true); }
+    });
+    window.addEventListener('keyup', function (e) {
+      if (e.code === 'Space' || e.key === ' ') set(false);
+    });
+    window.addEventListener('blur', function () { set(false); });   // 防止回来时飞船一直上升
+    document.addEventListener('touchstart', function (e) { e.preventDefault(); set(true); }, { passive: false });
+    document.addEventListener('touchend', function () { set(false); }, { passive: true });
+    return { get: function () { return held; } };
+  }
+  return { create: create };
+})();
+```
+
+- [ ] **Step 2: 写 audio.js**
+
+154 BPM，底鼓 + 军鼓 + 闭镲 + 贝斯，四小节循环。全部振荡器合成，不加载音频文件。
+
+```js
+window.GD_Audio = (function () {
+  var BPM = 154, SPB = 60 / BPM;      // 0.3896 s，等于一次跳跃的滞空
+  var ctx = null, started = false, nextNote = 0, step16 = 0, timer = null;
+
+  var KICK = [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,1,0];
+  var SNARE = [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1];
+  var HAT = [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1];
+  var BASS = [55,0,0,55, 0,49,0,0, 43,0,0,43, 0,41,0,0];   // A1/F1/G1 附近
+
+  function env(node, t, dur, peak) {
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(ctx.destination);
+    return g;
+  }
+  function hit(t, freq, dur, peak, type) {
+    var o = ctx.createOscillator(); o.type = type || 'sine';
+    o.frequency.setValueAtTime(freq, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(20, freq * 0.4), t + dur);
+    env(o, t, dur, peak); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function noise(t, dur, peak) {
+    var len = Math.ceil(ctx.sampleRate * dur), buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    var s = ctx.createBufferSource(); s.buffer = buf;
+    var f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 6000;
+    s.connect(f); env(f, t, dur, peak); s.start(t);
+  }
+
+  function schedule() {
+    while (nextNote < ctx.currentTime + 0.15) {
+      var i = step16 % 16, t = nextNote;
+      if (KICK[i]) hit(t, 120, 0.13, 0.55);
+      if (SNARE[i]) noise(t, 0.11, 0.22);
+      if (HAT[i]) noise(t, 0.03, i % 2 ? 0.05 : 0.09);
+      if (BASS[i]) {
+        var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(BASS[i], t);
+        var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
+        o.connect(lp); env(lp, t, SPB * 0.45, 0.16); o.start(t); o.stop(t + SPB * 0.5);
+      }
+      nextNote += SPB / 4; step16++;
+    }
+  }
+
+  function start() {
+    if (started) return;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      nextNote = ctx.currentTime + 0.05;
+      timer = setInterval(schedule, 25);
+      started = true;
+    } catch (e) { started = false; }   // 失败则静音继续，不阻塞游戏（spec §11.1）
+  }
+  function stop() { if (timer) clearInterval(timer); if (ctx) ctx.close(); started = false; ctx = null; }
+
+  return { start: start, stop: stop, SPB: SPB, isOn: function () { return started; } };
+})();
+```
+
+- [ ] **Step 3: 写 main.js**
+
+```js
+window.GD_Main = (function () {
+  var DT = GD_Physics.CONST.DT, MAX_FRAME = 0.05;   // 切后台钳制（spec §11.2）
+
+  function boot(canvas) {
+    var r = GD_Render.create(canvas);
+    GD_Render.resize(canvas);
+    var st = GD_Physics.create(GD_Level.crossbeat);
+    var input = GD_Input.create(canvas);
+    var acc = 0, last = performance.now(), fps = 60, fpsAcc = 0, fpsN = 0, booted = false;
+
+    function frame(now) {
+      var raw = (now - last) / 1000; last = now;
+      var dt = Math.min(raw, MAX_FRAME);
+      fpsAcc += raw; fpsN++;
+      if (fpsAcc >= 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
+      acc += dt;
+      var steps = 0;
+      while (acc >= DT && steps < Math.round(MAX_FRAME / DT)) { GD_Physics.step(st, input.get()); acc -= DT; steps++; }
+      if (steps === Math.round(MAX_FRAME / DT)) acc = 0;      // 抛掉追不上的积压
+      GD_Render.draw(r, st, dt);
+      GD_Hud.draw(r.ctx, st, fps);
+      if (!booted && (st.x > 0 || !st.alive)) { GD_Audio.start(); booted = true; }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    window.addEventListener('resize', function () { GD_Render.resize(canvas); });
+
+    return st;
+  }
+
+  var st = null;
+  function install(canvas) {
+    var errs = GD_Level.validate(GD_Level.crossbeat);
+    if (errs.length) { throw new Error('关卡数据非法:\n' + errs.join('\n')); }   // spec §11.4
+    st = boot(canvas);
+    window.__GD_TEST__ = {                                        // spec §12
+      step: function (n) { for (var i = 0; i < n; i++) GD_Physics.step(st, true); return st; },
+      feed: function (seq) {
+        var idx = 0, held = false, guard = 0;
+        return new Promise(function (res) {
+          function tick() {
+            while (idx < seq.length && st.time >= seq[idx].at) { held = seq[idx].down === true; idx++; }
+            GD_Physics.step(st, held);
+            // 死亡期间 st.time 不推进，必须用帧数兜底，否则 Promise 永不 resolve
+            guard++;
+            if (idx >= seq.length || st.finished || guard > 240 * 45) { res(st); return; }
+            requestAnimationFrame(tick);
+          }
+          tick();
+        });
+      },
+      measure: function () { return GD_Physics.measureJump(1); },
+      state: function () { return { x: st.x, y: st.y, mode: st.mode, speed: st.speedKey, alive: st.alive, percent: st.percent }; }
+    };
+  }
+  return { install: install };
+})();
+```
+
+- [ ] **Step 4: 写 index.html**
+
+```html
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crossbeat</title>
+<style>
+  html,body{margin:0;height:100%;background:#04121f;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;
+       font:12px monospace;color:#6b8ba8}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none}
+  #hint{position:fixed;bottom:6px;left:50%;transform:translateX(-50%)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">空格 / 点击 = 跳。按住 = 飞船上升</div>
+<script src="level.js"></script>
+<script src="physics.js"></script>
+<script src="render.js"></script>
+<script src="hud.js"></script>
+<script src="input.js"></script>
+<script src="audio.js"></script>
+<script src="main.js"></script>
+<script>GD_Main.install(document.getElementById('c'));</script>
+</body>
+</html>
+```
+
+- [ ] **Step 5: 验证双击即玩**
+
+先验证 `file://` 路径（这是 spec §14 验收项 2）：用 `mcp__browser-use__navigate_page` 打开
+`file:///C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7/index.html`。
+
+然后 `list_console_messages` 取错误，`evaluate_script` 读 `JSON.stringify(window.__GD_TEST__.state())`。
+
+预期：无 console 错误；state 返回 `{x: <正数>, y: 0..2, mode: "cube", speed: 1, alive: true, percent: <0-100>}`。
+
+再 `take_screenshot` 确认画面与 Task 9 一致。
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add input.js audio.js main.js index.html && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 输入、154 BPM 合成音轨与装配，双击即玩"
+```
+
+---
+
+## Task 12: 通关机器人（T3）
+
+这是证明关卡人类可通的唯一手段，也是本计划里最可能反复的一任务。
+
+**Files:**
+- Create: `tests/replay.js`
+- Create: `tests/replay.test.js`
+- Modify: `tests/harness.html`（已含这两个 script 标签）
+
+- [ ] **Step 1: 写回放测试**
+
+`tests/replay.test.js`：
+
+```js
+GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  var seq = GD_Replay.crossbeat, si = 0, held = false, diedAt = -1;
+  var maxSteps = 240 * 40;
+  for (var n = 0; n < maxSteps && !st.finished; n++) {
+    while (si < seq.length && seq[si].t <= st.time) { held = seq[si].d; si++; }
+    GD_Physics.step(st, held);
+    if (!st.alive && diedAt < 0) diedAt = st.x;
+    if (!st.alive) break;
+  }
+  if (!st.finished) {
+    throw new Error('未通关：percent=' + st.percent.toFixed(1) +
+      '% 停在 x=' + st.x.toFixed(1) + (diedAt >= 0 ? '，首次死亡 @' + diedAt.toFixed(1) : ''));
+  }
+  GD_ASSERT.ok(st.percent >= 100, 'percent 应 ≥100');
+});
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+预期：`FAIL T3 ... 未通关`，并给出首次死亡的 x 坐标。**这个 x 就是下一步要修的关卡位置。**
+
+- [ ] **Step 3: 用探针定位每个失败点**
+
+`evaluate_script` 执行，拿到死亡位置附近的所有对象：
+
+```js
+() => {
+  const st = GD_Physics.create(GD_Level.crossbeat);
+  const seq = GD_Replay.crossbeat; let si = 0, held = false;
+  const log = [];
+  for (let n = 0; n < 240 * 40 && st.alive && !st.finished; n++) {
+    while (si < seq.length && seq[si].t <= st.time) { held = seq[si].d; si++; }
+    GD_Physics.step(st, held);
+    log.push({ t: +st.time.toFixed(3), x: +st.x.toFixed(2), y: +st.y.toFixed(2), mode: st.mode, g: st.onGround });
+  }
+  const death = st.alive ? null : st.x;
+  const near = death == null ? [] : GD_Level.crossbeat.objects
+      .filter(o => Math.abs(o.x - death) < 6)
+      .map(o => `${o.t}@${o.x},${o.y}`);
+  return { death: death && +death.toFixed(2), near, percent: +st.percent.toFixed(1), tail: log.slice(-8) };
+}
+```
+
+- [ ] **Step 4: 迭代闭环（死亡点 → 改按键序列或改关卡 → 重跑）**
+
+规则，按优先级：
+
+1. **跳跃时机类死亡**（撞刺、撞墙脚）→ 修 `tests/replay.js` 的按键时刻。关卡是对的，是"机器人不会玩"。
+2. **物理上不可能**（如某柱阵需要 2.5 格跳高、飞行通道净空 < 玩家 1 格 + 容错）→ 修 `level.js` 的坐标。这是关卡设计错误，必须改关卡。
+3. 每次只改一处，重跑 Step 2。不要一次改十个点——无法归因。
+
+`tests/replay.js` 初版。
+
+**注意 `tOf()` 必须做分段积分**：关卡中间有 136 格跑在 2x 上，用 `x / 10.386` 一律换算会让 254 之后的每个起跳时刻偏掉约 3 秒——这是最容易在这里踩的坑，且症状（后半段全撞）很容易被误读成"关卡太难"。
+
+```js
+window.GD_Replay = (function () {
+  var SPAN = GD_Physics.measureJump(1).span;      // 4.06 格，实测而非硬编码
+  var S = GD_Physics.CONST.SPEEDS;
+  // 段落边界必须与 level.js 的 segments 完全一致
+  var SEGS = [[0, 110, 1], [110, 118, 1], [118, 254, 2], [254, 360, 1]];
+
+  function tOf(x) {
+    var t = 0;
+    for (var i = 0; i < SEGS.length; i++) {
+      var a = SEGS[i][0], b = SEGS[i][1], v = S[SEGS[i][2]];
+      if (x >= b) t += (b - a) / v;
+      else if (x > a) { t += (x - a) / v; break; }
+      else break;
+    }
+    return t;
+  }
+
+  var seq = [];
+  // 越过去：落地点刚过障碍末端，留 0.3 格余量。多宽尖刺阵必须给 width
+  function jumpOver(startX, width) {
+    var t = tOf(startX + (width || 1) - SPAN + 0.3);
+    seq.push({ t: t, d: true });
+    seq.push({ t: t + 0.05, d: false });
+  }
+  // 站上去：顶点 2.17 格出现在起跳后约 2.02 格处，故提前 2.0 格起跳
+  function jumpOntop(x) {
+    var t = tOf(x - 2.0);
+    seq.push({ t: t, d: true });
+    seq.push({ t: t + 0.05, d: false });
+  }
+
+  // 尖刺阵：[起点, 宽度]
+  [[14, 1], [22, 1], [30, 2], [48, 1], [64, 2], [74, 2], [94, 2], [106, 1],
+   [264, 1], [272, 2], [286, 1], [294, 2], [304, 2], [318, 2], [330, 1], [340, 3]]
+    .forEach(function (a) { jumpOver(a[0], a[1]); });
+  // 需要站上去的柱阵（2 格高可站，3 格高需借跳板/环）
+  [42, 58, 100, 280, 312].forEach(jumpOntop);
+  // 3 格墙与高台：靠跳板/环，不靠普通跳
+  jumpOver(82, 3);   // pillar(82,3) —— 实际由 pad_pink@70 越过，此处为兜底序列
+  jumpOver(324, 3);  // pillar(324,3) —— 实际由 ring_yellow@334 之前的节奏处理
+
+  // 飞船段 118–254：间歇按住维持通道高度
+  for (var t = tOf(118); t < tOf(254); t += 0.42) {
+    seq.push({ t: t, d: true });
+    seq.push({ t: t + 0.22, d: false });
+  }
+
+  seq.sort(function (a, b) { return a.t - b.t; });
+  return { crossbeat: seq, tOf: tOf, SPAN: SPAN };
+})();
+```
+
+暴露 `tOf` 是为了 Step 3 的探针能把"死亡位置 x"换算回"按键时刻 t"，否则只能人肉比对。
+
+- [ ] **Step 5: 跑测试确认通过**
+
+预期：`pass: 20, fail: 0`，T3 显示通关。
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: Crossbeat 通关回放，证明关卡人类可通"
+```
+
+---
+
+## Task 13: 人工试玩与手感校准
+
+**Files:**
+- Modify: 视校准结果而定（`physics.js` 或 `level.js`）
+
+- [ ] **Step 1: 打开 index.html 实玩**
+
+`navigate_page` 到 `http://127.0.0.1:8765/index.html`，用 `press_key` 打一段，`take_screenshot` 记录。
+
+**这一步必须真玩，不能只看测试通过。** 测试证明的是"数值正确 + 关卡可通"，证明不了"手感是 GD"。
+
+- [ ] **Step 2: 按 spec §13 逐项检查自调参**
+
+| 症状 | 首个要回看的数字 |
+|---|---|
+| 整体太快、来不及反应 | `SPEEDS[1] = 10.386` → 试 8.63（spec §13 冲突项） |
+| 尖刺莫名其妙碰到我 | `SPIKE_HB = 0.55` → 调小到 0.45 |
+| 明明贴着刺过去却死了 | `SPIKE_HB` → 调小到 0.45 |
+| 跳不上本该跳得上的台 | `JUMP_V0` / `LAND_TOL` |
+| 视野太窄、来不及看后面 | `LH = 240`（8 格）→ 试 300（10 格），spec §13.4 冲突项 |
+| 落地后下一跳有粘滞感 | `ROT_SNAP` / 长按自动连跳逻辑 |
+
+**每轮只改一个数字，重跑全部测试**（T1 会拦住任何破坏常数的改动）。
+
+- [ ] **Step 3: 若改了常数，同步更新 spec 与代码注释**
+
+改 `physics.js` 的 `CONST` 后必须重跑 `tests/harness.html`——T1 会红。若确实需要偏离 GD 常数，在 spec §13 追加一条记录"偏离原因 + 实玩证据"，不要悄悄改。
+
+- [ ] **Step 4: 清理临时文件**
+
+删除 `tests/visual-smoke.html`（Task 9 的调试页，不属于交付物）。
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git rm tests/visual-smoke.html
+```
+
+- [ ] **Step 5: 跑完整测试 + 最终截图**
+
+预期 `pass: 20, fail: 0`，`loadErrors: []`（所有文件都已存在）。
+
+`take_screenshot` 存档最终画面，与 `gd_ref/gd3.jpg` 并排比对布局。
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "fix: 实玩手感校准"
+```
+
+---
+
+## 验收对照（spec §14）
+
+| 验收项 | 由哪个任务保证 |
+|---|---|
+| T1–T6 全绿 | Task 2/3/4/7/8/12 |
+| D1 physics 层不依赖渲染（spec §5 架构约束） | Task 8 |
+| 双击 index.html 即玩，无需服务器 | Task 11 Step 5（`file://` 路径实测） |
+| 一关能打到 100%，死亡重开正常 | Task 12（T3）+ Task 4（T5a） |
+| 布局、描边、HUD 位置与原版观感一致 | Task 9 Step 4 + Task 10 Step 2 + Task 13 Step 5 |
+| 不含任何原版素材或音乐 | 全程自绘 + WebAudio 合成；`gd_ref/` 已在 .gitignore 中排除 |
+
+## 自查记录（已就地修正）
+
+| # | 问题 | 后果 | 修法 |
+|---|---|---|---|
+| 1 | `wx(ctx, x)` 读 `ctx.st.x`，但 `ctx` 是 2D 上下文 | 所有物体坐标 NaN，画面全黑 | 改为 `wx(st, x)`，贯穿 block/spike/portal/objects/player/particles |
+| 2 | `feed()` 把布尔当对象读（`st.testHeld.down`）；死亡期间 `st.time` 不推进 | Promise 永不 resolve | 用局部 `held`，并以帧数 `guard` 兜底 |
+| 3 | `level.js` 段落边界与传送门位置不一致，5 段 vs spec §7 | `tOf()` 分段积分与真实轨迹对不上 | 压成 4 段，边界严格等于传送门 x（118 / 254） |
+| 4 | 回放序列用 `x / 10.386` 换算时刻，但关卡有 136 格跑在 2x | 254 之后每个起跳偏约 3 秒，症状易误判成"关卡太难" | 改为 `tOf()` 分段积分；`jumpOver(x, w)` 让落点在障碍末端后 0.3 格 |
+| 5 | 非法 CSS 颜色 `'#7cff5fa8'` | 传送门描边色回退成黑色 | 改 `'#7cff5f'` |
+| 6 | `wasAlive` 是模块级变量 | 多实例/重开测试串状态 | 移入 `create()` 的实例字段 |
+| 7 | spec §5 的"physics 不引用渲染层"无验证 | 架构约束会随时间退化 | 新增 D1，用 fetch 预取源码做静态断言 |
