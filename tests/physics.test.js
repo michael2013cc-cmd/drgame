@@ -16,8 +16,11 @@ GD_ASSERT.test('T1 方块跳跃常数', function () {
     0.002, 'Verlet 积分指纹');
 });
 
-GD_ASSERT.test('T2 四档门速 1 秒水平位移', function () {
+GD_ASSERT.test('T2 五档门速与速度门切换', function () {
   var want = { 0.5: 8.372, 1: 10.386, 2: 12.914, 3: 15.600, 4: 19.200 };
+  // 五档全收集完再断言：run() 一条用例只在第一个抛出处中止，
+  // 逐档直接 assert 的话一次只能看到一档坏了，其余三档要等修完再跑才暴露。
+  var bad = [];
   for (var k in want) {
     if (!Object.prototype.hasOwnProperty.call(want, k)) continue;
     // 关卡必须带非空 segments：Task 2 修掉 respawn 的静默回退之后，
@@ -29,8 +32,26 @@ GD_ASSERT.test('T2 四档门速 1 秒水平位移', function () {
     });
     st.speedKey = parseFloat(k);
     for (var i = 0; i < 240; i++) GD_Physics.step(st, false);
-    GD_ASSERT.approx(st.x, want[k], 0.02, k + 'x 速度');
+    var err = Math.abs(st.x - want[k]) / want[k];
+    if (err > 0.02) {
+      bad.push(k + 'x 期望 ' + want[k] + ' 实得 ' + st.x + '（偏 ' + (err * 100).toFixed(2) + '%）');
+    }
   }
+  GD_ASSERT.ok(bad.length === 0, '门速表: ' + bad.join(' | '));
+
+  // 上面是直接写 st.speedKey，绕过了 collide 里的 speed_* 分支——那个分支此前零覆盖。
+  // 必须补：vxOf 的 `|| SPEEDS[1]` 回退会把认不出的速度门静默当成 1x，
+  // 实测写错一个键名（speed_05x）后 st.x 精确等于 1x 那一行的 10.386，测试照样绿。
+  var pst = GD_Physics.create({
+    segments: [{ from: 0, to: 1e9, mode: 'cube', speed: 1 }],
+    objects: [{ x: 5, y: 0, t: 'speed_2x' }],
+    meta: { endBlock: 1e9 }
+  });
+  for (var j = 0; j < 240; j++) GD_Physics.step(pst, false);   // 前 5 格走 1x，之后过门
+  GD_ASSERT.ok(pst.speedKey === 2, '过 speed_2x 门后 speedKey 应为 2，实得 ' + pst.speedKey);
+  var xBefore = pst.x;
+  for (var m = 0; m < 240; m++) GD_Physics.step(pst, false);
+  GD_ASSERT.approx(pst.x - xBefore, 12.914, 0.02, '过门后 1 秒水平位移');
 });
 
 GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
