@@ -78,10 +78,24 @@ GD_ASSERT.test('T5a 撞尖刺死亡并从 0% 重开', function () {
   var st = GD_Physics.create(LV([{ x: 8, y: 0, t: 'spike' }]));
   var steps = 0;
   while (st.alive && steps < 240 * 5) { GD_Physics.step(st, false); steps++; }
-  GD_ASSERT.ok(!st.alive, '应已死亡');
-  for (var i = 0; i < 240; i++) GD_Physics.step(st, false);   // 跨过 1.0 s 延迟
-  GD_ASSERT.ok(st.alive, '1 秒后应自动重开');
+  var deathX = st.x;
+  GD_ASSERT.ok(!st.alive, '应已死亡，跑到第 ' + steps + ' 步 x=' + deathX + ' 仍活着');
+  // 只断言 !alive 的话任何一次误判早死都能绿灯，所以把死亡瞬间的 x 钉住：实测 7.7462，
+  // 即玩家前沿 x1=st.x+0.5 首次进入致死框 x∈[8.225, 8.775]（SPIKE_HB 0.55）那一步。
+  GD_ASSERT.near(deathX, 7.75, 0.15, '尖刺致死点 x（实测 7.7462，第 ' + steps + ' 步）');
+  // 反证：同一关卡把刺拆掉，同样步数还活着——证明这次死亡来自这根刺而不是别的判定。
+  var ctl = GD_Physics.create(LV([]));
+  for (var c = 0; c < steps; c++) GD_Physics.step(ctl, false);
+  GD_ASSERT.ok(ctl.alive, '去掉尖刺后第 ' + steps + ' 步应仍活着，实得 x=' + ctl.x);
+  // 等待步数由常数导出：写死 240 只在 DEATH_DELAY=1.0 时成立，改成 0.5 就 120 步重开，
+  // 剩下 120 步是活跑（x 白走 5.19 格），正确的实现反而被跑红。
+  var wait = Math.round(GD_Physics.CONST.DEATH_DELAY / GD_Physics.CONST.DT);
+  for (var i = 0; i < wait; i++) GD_Physics.step(st, false);
+  GD_ASSERT.ok(st.alive, 'DEATH_DELAY（' + wait + ' 步）后应自动重开');
   GD_ASSERT.near(st.x, 0, 0.05, '重开位置');
+  // percent/time 不由 x 推出来，respawn 漏清就是"从死点继续"，x=0 也照样绿灯
+  GD_ASSERT.ok(st.percent === 0, '重开后 percent 应为 0，实为 ' + st.percent);
+  GD_ASSERT.ok(st.time === 0, '重开后 time 应为 0，实为 ' + st.time);
   GD_ASSERT.ok(st.attempt === 2, 'attempt 应为 2，实为 ' + st.attempt);
 });
 
@@ -90,8 +104,9 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
   // 起跳点取"距墙半跳"而不是"距墙一整跳"。一整跳起跳会让人**落在墙上**而不是跳过墙：
   // 实测 6-span≈1.93 起跳时，下落途中 x=5.50 处 LAND_TOL 先把第 1 格的顶（y=1）
   // 当成可站面，把玩家吸到 y=1，等于钻进第 2 格内部，随后被缩小框判死。
-  // 半跳起跳让顶点正好在墙前沿（顶点 2.17 > 墙高 2），实测可通过的起跳区间是
-  // x∈[2.5, 4.6]，6-span/2≈3.97 落在区间正中。
+  // 半跳起跳让顶点正好在墙前沿（顶点 2.17 > 墙高 2）。把起跳阈值从 1.00 扫到 5.95
+  // （步长 0.05）实测可通过区间连续无空洞 x∈[2.5, 5.45]，6-span/2≈3.966 落在正中（中点 3.975）；
+  // 阈值不是触发起跳的 x——起跳发生在第一个 x≥阈值的模拟步，实测 x=3.9813，差一个步长量化。
   var takeoffX = 6 - span / 2;
   function trial(wallH) {
     var objs = [];
@@ -103,10 +118,17 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
       if (want) jumped = true;
       GD_Physics.step(st, want);
     }
-    return st.alive;
+    return { alive: st.alive, x: st.x, y: st.y };
   }
-  GD_ASSERT.ok(trial(2) === true, '2 格墙应能跳过');
-  GD_ASSERT.ok(trial(3) === false, '3 格墙应撞死');
+  var over = trial(2);
+  GD_ASSERT.ok(over.alive, '2 格墙应能跳过');
+  // 活着不等于翻过了墙：480 步内实测跑到 x=20.77，必须确已越过 x=6 的墙柱才算跳过
+  GD_ASSERT.ok(over.x > 8, '2 格墙应跳过后跑到墙后，实得 x=' + over.x + '（实测 20.77）');
+  var hit = trial(3);
+  GD_ASSERT.ok(!hit.alive, '3 格墙应撞死');
+  // 且要死在墙柱里：实测 x=6.2316、y=2.1454（顶到第 3 格的侧面），死在别处就是判定的锅
+  GD_ASSERT.ok(hit.x > 6 && hit.x < 7,
+    '3 格墙应死在 x∈(6,7) 的墙柱内，实得 x=' + hit.x + ' y=' + hit.y + '（实测 6.2316 / 2.1454）');
 });
 
 GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
@@ -120,5 +142,34 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
     if (st.y < minY) minY = st.y;
   }
   GD_ASSERT.near(minY, 0, 0.001, '不应穿地');
-  GD_ASSERT.ok(bounced >= 2, '长按应自动连跳，实际连跳 ' + bounced + ' 次');
+  // 实测 7 次；6 是给合法常数微调留的余量，原来的 2 低到"只弹两次也算连跳"
+  GD_ASSERT.ok(bounced >= 6, '长按应自动连跳，实际连跳 ' + bounced + ' 次');
+
+  // coyote 探针。平地长按那个循环永远不离开地面，勾不出宽限期，所以要用台沿——
+  // 但实测走下台沿并不产生空中态：无输入从 y=1 台面（block y=0、x=1..4）走到 x=5.5439
+  // 那一步，stepCube 把 y 一步吸附到 0，全程 onGround 为真（空中态 0 步，台面高 2 格
+  // 时同样一步吸到底）。于是"离开地面"只能由起跳造成，宽限期窗口从失去地面那步起算。
+  var objs = [];
+  for (var b = 1; b <= 4; b++) objs.push({ x: b, y: 0, t: 'block' });
+  var cs = GD_Physics.create(LV(objs));
+  cs.x = 1; cs.y = 1; cs.onGround = true;          // 站在台面上，台面顶 y=1
+  GD_Physics.step(cs, true);                       // 起跳，这一步之后就不在地面了
+  for (var w = 0; w < 3; w++) GD_Physics.step(cs, false);   // 先松手，边沿触发的宽限期也要能勾出来
+  var reJump = 0, prevVy = cs.vy;
+  for (var g = 0; g < 10; g++) {
+    GD_Physics.step(cs, true);
+    if (cs.vy >= prevVy) reJump++;        // 有宽限期就会在这里把 vy 重置回 JUMP_V0
+    prevVy = cs.vy;
+  }
+  GD_ASSERT.ok(!cs.onGround, 'coyote 窗口应仍在空中，否则被落地重置污染，实测 y=' + cs.y);
+  GD_ASSERT.ok(reJump === 0, '离地后按住 10 步不该再拿到起跳，vy 回升 ' + reJump + ' 次');
+  for (var q = 0; q < 60 && cs.vy > 0; q++) GD_Physics.step(cs, true);   // 爬到顶点
+  var fellBad = 0, prevY = cs.y;
+  for (var d = 0; d < 10; d++) {
+    GD_Physics.step(cs, true);
+    if (!(cs.vy < 0 && cs.y < prevY)) fellBad++;   // 下落段长按：vy 须为负、y 须继续降
+    prevY = cs.y;
+  }
+  GD_ASSERT.ok(fellBad === 0,
+    '下落段按住不该起跳，异常 ' + fellBad + ' 步，末态 y=' + cs.y + ' vy=' + cs.vy);
 });
