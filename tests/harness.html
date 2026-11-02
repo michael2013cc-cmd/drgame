@@ -1,6 +1,19 @@
 <!DOCTYPE html>
 <html lang="zh">
-<head><meta charset="utf-8"><title>GD tests</title></head>
+<head>
+<meta charset="utf-8"><title>GD tests</title>
+<script>
+  // 必须挂在 <head>：下面 7 个 <script src> 是 parser-blocking 的，
+  // 尚未创建的那几个的 404 error 事件在解析到文档末尾的内联脚本之前就已发完，
+  // 监听器挂晚了就永远抓不到（实测 loadErrors 恒为 []）。
+  window.addEventListener('error', function (e) {
+    // 资源加载失败的 error 事件里 e.message / e.filename 都是 undefined，
+    // 真正可读的标识在 e.target.src 上。
+    var id = (e.target && e.target.src) ? e.target.src : String(e.message || e.filename);
+    (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(id);
+  }, true);
+</script>
+</head>
 <body style="font:12px monospace;background:#111;color:#ddd;margin:0;padding:12px">
 <pre id="out">running...</pre>
 <script src="assert.js"></script>
@@ -11,10 +24,6 @@
 <script src="replay.js"></script>
 <script src="replay.test.js"></script>
 <script>
-  // 尚未创建的文件先容错：缺文件时 script 标签只是 404，不影响其余加载
-  window.addEventListener('error', function (e) {
-    (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(String(e.message || e.filename));
-  }, true);
   var res = GD_ASSERT.run();
   res.loadErrors = window.__LOAD_ERRORS__ || [];
   document.getElementById('out').textContent = JSON.stringify(res, null, 1);

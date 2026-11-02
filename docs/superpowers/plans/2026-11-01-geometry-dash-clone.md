@@ -147,7 +147,20 @@ window.GD_ASSERT = (function () {
 ```html
 <!DOCTYPE html>
 <html lang="zh">
-<head><meta charset="utf-8"><title>GD tests</title></head>
+<head>
+<meta charset="utf-8"><title>GD tests</title>
+<script>
+  // 必须挂在 <head>：下面 7 个 <script src> 是 parser-blocking 的，
+  // 尚未创建的那几个的 404 error 事件在解析到文档末尾的内联脚本之前就已发完，
+  // 监听器挂晚了就永远抓不到（实测 loadErrors 恒为 []）。
+  window.addEventListener('error', function (e) {
+    // 资源加载失败的 error 事件里 e.message / e.filename 都是 undefined，
+    // 真正可读的标识在 e.target.src 上。
+    var id = (e.target && e.target.src) ? e.target.src : String(e.message || e.filename);
+    (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(id);
+  }, true);
+</script>
+</head>
 <body style="font:12px monospace;background:#111;color:#ddd;margin:0;padding:12px">
 <pre id="out">running...</pre>
 <script src="assert.js"></script>
@@ -158,10 +171,6 @@ window.GD_ASSERT = (function () {
 <script src="replay.js"></script>
 <script src="replay.test.js"></script>
 <script>
-  // 尚未创建的文件先容错：缺文件时 script 标签只是 404，不影响其余加载
-  window.addEventListener('error', function (e) {
-    (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(String(e.message || e.filename));
-  }, true);
   var res = GD_ASSERT.run();
   res.loadErrors = window.__LOAD_ERRORS__ || [];
   document.getElementById('out').textContent = JSON.stringify(res, null, 1);
@@ -202,7 +211,7 @@ GD_ASSERT.test('S2 断言失败能被捕获', function () {
 { "ready": true, "r": { "pass": 2, "fail": 0, "log": ["PASS S1 脚手架可用", "PASS S2 断言失败能被捕获"] } }
 ```
 
-`loadErrors` 里会有 5 条 404（level.js / physics.js / physics.test.js / replay.js / replay.test.js），**这是本任务的预期状态**，从 Task 2 起逐条减少。
+`loadErrors` 里会有 5 条 404（level.js / physics.js / physics.test.js / replay.js / replay.test.js），**这是本任务的预期状态**，从 Task 2 起逐条减少。若 `loadErrors` 是空数组，说明 `<head>` 里的监听器又挂晚了或被移走——这是个静默失效的坑，必须修好再继续。
 
 - [ ] **Step 5: Commit**
 
@@ -1717,3 +1726,4 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c u
 | 5 | 非法 CSS 颜色 `'#7cff5fa8'` | 传送门描边色回退成黑色 | 改 `'#7cff5f'` |
 | 6 | `wasAlive` 是模块级变量 | 多实例/重开测试串状态 | 移入 `create()` 的实例字段 |
 | 7 | spec §5 的"physics 不引用渲染层"无验证 | 架构约束会随时间退化 | 新增 D1，用 fetch 预取源码做静态断言 |
+| 8 | `error` 监听器挂在文档末尾的内联 `<script>` 里 | 5 个 parser-blocking 的 404 在解析到该脚本前就发完了，`loadErrors` 恒为 `[]`——Task 2/8 的"404 逐条减少"验证信号静默失效 | 监听器移进 `<head>`，先于任何 `<script src>` 注册 |
