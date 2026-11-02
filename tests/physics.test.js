@@ -62,3 +62,63 @@ GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
   // 实现是解析相等，所以这里钉成精确相等，不要写成 1.023 那种"看着像"的比值。
   GD_ASSERT.near(m2.airtime, m1.airtime, 1e-9, '滞空不随速度变');
 });
+
+// 本任务三条用例都要重开（T5a 直接撞死，T5b/T5c 也可能死），
+// 所以关卡必须带非空 segments：Task 2 已把 respawn 的静默回退拆掉，
+// 缺 segments 会在重开时抛 TypeError，而不是悄悄退回 cube 1x。
+var LV = function (objs) {
+  return {
+    segments: [{ from: 0, to: 1000, mode: 'cube', speed: 1 }],
+    objects: objs,
+    meta: { endBlock: 1000 }
+  };
+};
+
+GD_ASSERT.test('T5a 撞尖刺死亡并从 0% 重开', function () {
+  var st = GD_Physics.create(LV([{ x: 8, y: 0, t: 'spike' }]));
+  var steps = 0;
+  while (st.alive && steps < 240 * 5) { GD_Physics.step(st, false); steps++; }
+  GD_ASSERT.ok(!st.alive, '应已死亡');
+  for (var i = 0; i < 240; i++) GD_Physics.step(st, false);   // 跨过 1.0 s 延迟
+  GD_ASSERT.ok(st.alive, '1 秒后应自动重开');
+  GD_ASSERT.near(st.x, 0, 0.05, '重开位置');
+  GD_ASSERT.ok(st.attempt === 2, 'attempt 应为 2，实为 ' + st.attempt);
+});
+
+GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
+  var span = GD_Physics.measureJump(1).span;      // 用实测跳距，不硬编码
+  // 起跳点取"距墙半跳"而不是"距墙一整跳"。一整跳起跳会让人**落在墙上**而不是跳过墙：
+  // 实测 6-span≈1.93 起跳时，下落途中 x=5.50 处 LAND_TOL 先把第 1 格的顶（y=1）
+  // 当成可站面，把玩家吸到 y=1，等于钻进第 2 格内部，随后被缩小框判死。
+  // 半跳起跳让顶点正好在墙前沿（顶点 2.17 > 墙高 2），实测可通过的起跳区间是
+  // x∈[2.5, 4.6]，6-span/2≈3.97 落在区间正中。
+  var takeoffX = 6 - span / 2;
+  function trial(wallH) {
+    var objs = [];
+    for (var i = 0; i < wallH; i++) objs.push({ x: 6, y: i, t: 'block' });
+    var st = GD_Physics.create(LV(objs));
+    var jumped = false;
+    for (var s = 0; s < 240 * 2 && st.alive; s++) {
+      var want = !jumped && st.x >= takeoffX && st.onGround;
+      if (want) jumped = true;
+      GD_Physics.step(st, want);
+    }
+    return st.alive;
+  }
+  GD_ASSERT.ok(trial(2) === true, '2 格墙应能跳过');
+  GD_ASSERT.ok(trial(3) === false, '3 格墙应撞死');
+});
+
+GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
+  var st = GD_Physics.create(LV([]));
+  GD_Physics.step(st, true);
+  var minY = 99, bounced = 0, prevGround = true;
+  for (var i = 0; i < 240 * 3; i++) {
+    GD_Physics.step(st, true);
+    if (st.onGround && !prevGround) bounced++;
+    prevGround = st.onGround;
+    if (st.y < minY) minY = st.y;
+  }
+  GD_ASSERT.near(minY, 0, 0.001, '不应穿地');
+  GD_ASSERT.ok(bounced >= 2, '长按应自动连跳，实际连跳 ' + bounced + ' 次');
+});

@@ -88,7 +88,10 @@ window.GD_Physics = (function () {
   function step(st, held) {
     if (!st.alive) {
       st.deadTimer -= CONST.DT;
-      if (st.deadTimer <= 0) respawn(st);
+      // 判定用"离整步最近"而不是 `<= 0`：DEATH_DELAY = 1.0 恰好是 240 个 1/240，
+      // 但 1/240 在二进制里除不尽，连减 240 次还剩 +2.3e-15，
+      // 于是重开永远慢一步（实测死在第 241 步，x 白吃掉 0.043 格的判定预算）。
+      if (st.deadTimer <= CONST.DT * 0.5) respawn(st);
       return;
     }
     if (st.finished) return;

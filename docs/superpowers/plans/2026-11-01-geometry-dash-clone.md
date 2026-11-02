@@ -385,7 +385,10 @@ window.GD_Physics = (function () {
   function step(st, held) {
     if (!st.alive) {
       st.deadTimer -= CONST.DT;
-      if (st.deadTimer <= 0) respawn(st);
+      // 判定用"离整步最近"而不是 `<= 0`：DEATH_DELAY = 1.0 恰好是 240 个 1/240，
+      // 但 1/240 在二进制里除不尽，连减 240 次还剩 +2.3e-15，
+      // 于是重开永远慢一步（实测死在第 241 步，x 白吃掉 0.043 格的判定预算）。
+      if (st.deadTimer <= CONST.DT * 0.5) respawn(st);
       return;
     }
     if (st.finished) return;
@@ -678,20 +681,31 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
 
 - [ ] **Step 2: 跑测试确认失败或通过**
 
-预期 `T5a`/`T5c` 通过（Task 2 已实现死亡与长按），`T5b` 可能因起跳时机不准而失败。**这是本任务要修的点**：`trial()` 里的起跳时机需要按实测跳距（Task 2 修完 measureJump 起点后是 4.0679 格）微调——把 `st.x < 2.0` 改成 `st.x < 6.0 - 4.07`（即 1.93）。若仍不稳，改为在 `st.x >= 6.0 - m.span` 时起跳，`m = GD_Physics.measureJump(1)`，让测试自己适应实现而不是反过来。
+预期 **T5a 和 T5b 都会红**，各暴露一个真问题，都不是"测试写错了"：
+
+- `T5a` 红在"1 秒后应自动重开"：`DEATH_DELAY = 1.0` 恰好等于 240 个 `1/240`，但 1/240 二进制除不尽，连减 240 次还剩 **+2.3e-15**，`deadTimer <= 0` 永远差一步，重开稳定发生在第 241 步。修法是 `physics.js` 的死亡分支改成按"离整步最近"判定（`<= CONST.DT * 0.5`），Task 2 Step 3 的代码块已同步；不要让测试多等一步来回避——那会把"重开晚 0.5 秒"这类真回归也一并放宽。
+- `T5b` 红在"2 格墙应能跳过"：`6 - span ≈ 1.93` 起跳会让人**落在墙上**而不是跳过墙——下落途中 `LAND_TOL` 先把第 1 格的顶当成可站面把人吸进去，随即被缩小框判死。Step 3 给出实测可通过的起跳区间 `x∈[2.5, 4.6]`。
+
+`T5c` 应直接通过（长按自动连跳在 Task 2 就实现了），实测 `bounced: 7, minY: 0`。
 
 - [ ] **Step 3: 修测试的起跳时机**
 
 ```js
 GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
   var span = GD_Physics.measureJump(1).span;      // 用实测跳距，不硬编码
+  // 起跳点取"距墙半跳"而不是"距墙一整跳"。一整跳起跳会让人**落在墙上**而不是跳过墙：
+  // 实测 6-span≈1.93 起跳时，下落途中 x=5.50 处 LAND_TOL 先把第 1 格的顶（y=1）
+  // 当成可站面，把玩家吸到 y=1，等于钻进第 2 格内部，随后被缩小框判死。
+  // 半跳起跳让顶点正好在墙前沿（顶点 2.17 > 墙高 2），实测可通过的起跳区间是
+  // x∈[2.5, 4.6]，6-span/2≈3.97 落在区间正中。
+  var takeoffX = 6 - span / 2;
   function trial(wallH) {
     var objs = [];
     for (var i = 0; i < wallH; i++) objs.push({ x: 6, y: i, t: 'block' });
     var st = GD_Physics.create(LV(objs));
     var jumped = false;
     for (var s = 0; s < 240 * 2 && st.alive; s++) {
-      var want = !jumped && st.x >= 6 - span && st.onGround;
+      var want = !jumped && st.x >= takeoffX && st.onGround;
       if (want) jumped = true;
       GD_Physics.step(st, want);
     }
@@ -1856,3 +1870,5 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c u
 | 9 | harness 可以"假绿"：测试文件在注册期抛异常会丢掉其后所有用例，`fail` 仍是 0；文件被改名后 404 混在本属预期的 `loadErrors` 里看不出来 | 后续 11 个任务里任何一次静默丢失用例都不会被发现 | `expect_tests(N)` 注册数门禁 + `__RUN_ERRORS__` 与 `__LOAD_ERRORS__` 分桶 |
 | 10 | T1 的三条 2% 相对容差**拦不住**半隐式欧拉：实测欧拉·先减速度顶点 2.127420，对 2.17 只偏 1.96%，距容差下限 2.1266 差 0.0008 格 | 计划开头"不要简化成欧拉，T1 会红"这条防线是假的；将来有人换积分器，测试照样绿，症状推迟到实玩才暴露 | T1 追加 `near(m.apex, 2.173781, 0.002)` 绝对精度指纹断言；开头那节改用实测数字重写 |
 | 11 | `respawn` 的两个三元回退会静默改成 cube/1x（`segments` 为空或拼错时没有任何测试会红）；`GROUND_Y` 用中心点、`collide` 用整框，两者对"是否站在方块上"判定不一致；`CONST` 按引用导出、可被外部改写（实测 `G=1` 后顶点变 151.7）；`measureJump` 起点取在起跳步之后、滞空与跳距各少算 1 个 dt；指纹断言写死 2.173781 会让合法的常数重调误报 | 静默换模式时后续任务全绿也没有测试会红；实测吃掉 0.0375 秒的长按起跳输入，症状会传染给 Task 9（渲染倾角）、Task 12（回放机器人）与 ship→cube 传送门；`measureJump` 撞 2000 步上限时静默返回残值当真值 | 直接读取段 0 + 默认关卡补 `segments`；中心判定改成与 `collide` 一致的整框判定；`Object.freeze` CONST 及四个子表；起点前移并对 2000 步截断抛错；指纹期望值改由 `v0²/(2g)` 现算。延后（留给 Task 4/6 实现者顺手处理）：命中框内联字面量（0.35、-0.6…+1.6、1.4×2.6 在 collide 重复两处）未收进 `CONST.HIT`；`collide` 的 `pb` 只算一次、循环中 `st.y` 被改后仍用旧框测后续对象；`GROUND_Y`/`GROUND`/`near` 命名与 physics.js:13 的"致用"错字；`SPIKE_HB` 未拆成宽高 |
+| 12 | `deadTimer <= 0` 判重开：`DEATH_DELAY = 1.0` 恰为 240 个 `1/240`，但 1/240 二进制除不尽，连减 240 次剩 +2.3e-15 | 重开永远慢一步；T5a 里 `near(st.x, 0, 0.05)` 的预算被这一步白吃掉 0.043 格（86.5%），后面对重开时序的任何判定都建立在沙子上 | 死亡分支改为 `<= CONST.DT * 0.5`（按离整步最近判定），Task 2 Step 3 代码块同步 |
+| 13 | T5b 用"距墙一整跳"（`6 - span ≈ 1.93`）起跳 | 人不是跳过墙而是**落在墙上**：下落途中 `LAND_TOL` 先把第 1 格的顶当成可站面把人吸进方块内部，随即被缩小框判死；`trial(2)` 恒红，症状看起来像"跳跃高度不够"会误导去改 `JUMP_V0` | 起跳点改为半跳距 `6 - span/2`，让顶点落在墙前沿；实测可通过区间 x∈[2.5, 4.6]，3.97 在正中 |
