@@ -31,7 +31,7 @@
 <script>
   // 每加一个任务就把这个数字改成"到本任务为止应有的用例总数"（计划里每个任务的
   // Step 4 都写了预期 pass 数）。数字对不上 = 有用例文件抛异常或没注册上。
-  GD_ASSERT.expect_tests(3);
+  GD_ASSERT.expect_tests(5);
   var res = GD_ASSERT.run();
   res.loadErrors = window.__LOAD_ERRORS__ || [];
   res.runErrors = window.__RUN_ERRORS__ || [];
