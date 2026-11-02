@@ -626,8 +626,19 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -
 追加到 `tests/physics.test.js`（本任务新增 T5a/T5b/T5c 三条；Step 3 是**替换** T5b 不是再加一条，所以总数停在 8）：
 
 ```js
+// 本任务三条用例都要重开（T5a 直接撞死，T5b/T5c 也可能死），
+// 所以关卡必须带非空 segments：Task 2 已把 respawn 的静默回退拆掉，
+// 缺 segments 会在重开时抛 TypeError，而不是悄悄退回 cube 1x。
+var LV = function (objs) {
+  return {
+    segments: [{ from: 0, to: 1000, mode: 'cube', speed: 1 }],
+    objects: objs,
+    meta: { endBlock: 1000 }
+  };
+};
+
 GD_ASSERT.test('T5a 撞尖刺死亡并从 0% 重开', function () {
-  var st = GD_Physics.create({ objects: [{ x: 8, y: 0, t: 'spike' }], meta: { endBlock: 1000 } });
+  var st = GD_Physics.create(LV([{ x: 8, y: 0, t: 'spike' }]));
   var steps = 0;
   while (st.alive && steps < 240 * 5) { GD_Physics.step(st, false); steps++; }
   GD_ASSERT.ok(!st.alive, '应已死亡');
@@ -641,8 +652,8 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
   function trial(wallH) {
     var objs = [];
     for (var i = 0; i < wallH; i++) objs.push({ x: 6, y: i, t: 'block' });
-    var st = GD_Physics.create({ objects: objs, meta: { endBlock: 1000 } });
-    // 在墙前 4 格起跳：x=2 时跳，跳距 4.04 正好落在 x=6.04 的墙顶
+    var st = GD_Physics.create(LV(objs));
+    // 在墙前约一跳之远起跳：跳距 4.07 格，从 x≈2 起跳正好落在 x=6 的墙顶
     for (var s = 0; s < 240 * 2; s++) GD_Physics.step(st, st.x < 2.0 && !st.jumped ? (st.jumped = true, true) : false);
     return st.alive;
   }
@@ -651,7 +662,7 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
 });
 
 GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
-  var st = GD_Physics.create({ objects: [], meta: { endBlock: 1000 } });
+  var st = GD_Physics.create(LV([]));
   GD_Physics.step(st, true);
   var minY = 99, bounced = 0, prevGround = true;
   for (var i = 0; i < 240 * 3; i++) {
@@ -667,7 +678,7 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
 
 - [ ] **Step 2: 跑测试确认失败或通过**
 
-预期 `T5a`/`T5c` 通过（Task 2 已实现死亡与长按），`T5b` 可能因起跳时机不准而失败。**这是本任务要修的点**：`trial()` 里的起跳时机需要按实测跳距 4.02~4.06 格微调——把 `st.x < 2.0` 改成 `st.x < 6.0 - 4.02`（即 1.98）。若仍不稳，改为在 `st.x >= 6.0 - m.span` 时起跳，`m = GD_Physics.measureJump(1)`，让测试自己适应实现而不是反过来。
+预期 `T5a`/`T5c` 通过（Task 2 已实现死亡与长按），`T5b` 可能因起跳时机不准而失败。**这是本任务要修的点**：`trial()` 里的起跳时机需要按实测跳距（Task 2 修完 measureJump 起点后是 4.0679 格）微调——把 `st.x < 2.0` 改成 `st.x < 6.0 - 4.07`（即 1.93）。若仍不稳，改为在 `st.x >= 6.0 - m.span` 时起跳，`m = GD_Physics.measureJump(1)`，让测试自己适应实现而不是反过来。
 
 - [ ] **Step 3: 修测试的起跳时机**
 
@@ -677,7 +688,7 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
   function trial(wallH) {
     var objs = [];
     for (var i = 0; i < wallH; i++) objs.push({ x: 6, y: i, t: 'block' });
-    var st = GD_Physics.create({ objects: objs, meta: { endBlock: 1000 } });
+    var st = GD_Physics.create(LV(objs));
     var jumped = false;
     for (var s = 0; s < 240 * 2 && st.alive; s++) {
       var want = !jumped && st.x >= 6 - span && st.onGround;
@@ -690,6 +701,8 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
   GD_ASSERT.ok(trial(3) === false, '3 格墙应撞死');
 });
 ```
+
+（Step 1 定义的文件内共享 `LV()` 帮助函数继续用；本步是**替换**整条 T5b，不是再加一条，所以注册数停在 8。）
 
 - [ ] **Step 4: 跑测试确认通过**
 
