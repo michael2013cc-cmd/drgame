@@ -19,11 +19,21 @@ window.GD_Physics = (function () {
     RING: { ring_pink: 15.78, ring_yellow: 23.40 }
   };
 
+  // 关卡常数表被导出去给 render/hud/tests 读，必须冻死：实测把 CONST.G 改成 1
+  // 会让 measureJump 的顶点从 2.17 变成 151.7，而物理照样"能跑"。
+  // 冻结是浅层的，四个子表各自也要冻。strict mode 下写入会抛，非严格调用方静默失败，
+  // 都比静默污染物理好。
+  Object.freeze(CONST);
+  Object.freeze(CONST.SPEEDS);
+  Object.freeze(CONST.SHIP);
+  Object.freeze(CONST.PAD);
+  Object.freeze(CONST.RING);
+
   var GROUND = 0;   // 地面线 y=0，向上为正
 
   function create(level) {
     return {
-      level: level || { objects: [], meta: { endBlock: 1000 } },
+      level: level || { segments: [{ from: 0, to: 1000, mode: 'cube', speed: 1 }], objects: [], meta: { endBlock: 1000 } },
       x: 0, y: 0, vy: 0, rot: 0,
       mode: 'cube', speedKey: 1,
       alive: true, finished: false, deadTimer: 0, attempt: 1,
@@ -44,8 +54,9 @@ window.GD_Physics = (function () {
     st.x = 0; st.y = 0; st.vy = 0; st.rot = 0;
     st.alive = true; st.finished = false; st.deadTimer = 0;
     st.attempt += 1; st.time = 0; st.onGround = true; st.percent = 0;
-    st.mode = st.level.segments ? st.level.segments[0].mode : 'cube';
-    st.speedKey = st.level.segments ? st.level.segments[0].speed : 1;
+    var seg = st.level.segments[0];
+    st.mode = seg.mode;
+    st.speedKey = seg.speed;
     st.used = {};
   }
 
@@ -134,7 +145,7 @@ window.GD_Physics = (function () {
     for (var k = 0; k < list.length; k++) {
       var o = list[k].o;
       if (o.t !== 'block') continue;
-      if (st.x < o.x - 0.02 || st.x > o.x + 1.02) continue;
+      if (st.x < o.x - 0.52 || st.x > o.x + 1.52) continue;
       var top = o.y + 1;
       if (top <= st.y + CONST.LAND_TOL && top > best) best = top;
     }
@@ -190,18 +201,22 @@ window.GD_Physics = (function () {
     }
   }
 
-  // 供测试用：平地起跳的解析实测
+  // 供测试用：平地起跳的实测。起点在起跳那一步之前，否则滞空与跳距各少算一步 dt。
   function measureJump(speedKey) {
-    var st = create({ objects: [], meta: { endBlock: 100000 } });
+    var st = create({
+      segments: [{ from: 0, to: 1e9, mode: 'cube', speed: 1 }],
+      objects: [],
+      meta: { endBlock: 1e9 }
+    });
     st.speedKey = speedKey || 1;
-    step(st, true);            // 触发起跳
     var x0 = st.x, t0 = st.time, apex = st.y, n = 0;
-    st.onGround = false;
+    step(st, true);            // 触发起跳，这一步要计入滞空与跳距
     while (st.alive && st.y > 0 && n < 2000) {
       step(st, false);
       if (st.y > apex) apex = st.y;
       n++;
     }
+    if (n >= 2000) throw new Error('measureJump: 2000 步内未落地，测量被截断');
     return { airtime: st.time - t0, apex: apex, span: st.x - x0 };
   }
 

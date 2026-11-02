@@ -29,12 +29,12 @@
 | 半隐式欧拉·先减速度 `vy -= g*dt; y += vy*dt` | 2.127420 | 1.96% | **也是绿** ← 计划原稿以为会红 |
 | 半隐式欧拉·先加位置 `y += vy*dt; vy -= g*dt` | 2.220587 | 2.33% | 红，但只红线 0.33% |
 
-Verlet 对恒定加速度**解析精确**：解析顶点 v0²/(2g) = 2.173781，实测差 0.00011 格（0.005%）；两种欧拉各差约 0.046 格。滞空与跳距同理（Verlet 实测 滞空 0.3875 s、@1x 跳距 4.0246 格，对 0.389 / 4.04 各偏 0.35%，全在 2% 内）。
+Verlet 对恒定加速度**解析精确**：解析顶点 v0²/(2g) = 2.173781，实测差 0.00011 格（0.005%）；两种欧拉各差约 0.046 格。滞空与跳距同理（Verlet 实测 滞空 0.3917 s、@1x 跳距 4.0679 格，对 0.389 / 4.04 各偏 +0.69% / +0.69%，全在 2% 内；早先记录的 0.3875 / 4.0246 是 `measureJump` 把测量起点取在起跳步之后、滞空与跳距各少算一步 dt 的产物，已按自查记录 11 修正）。
 
 **由此得出两条必须执行的结论：**
 
 1. **不要"顺手简化"成半隐式欧拉**——手感会变，且关卡是按解析轨迹设计的。
-2. **光靠 2% 相对容差拦不住它**：容差下限 2.17 × 0.98 = 2.1266，欧拉·先减速度落在 2.1274，以 0.0008 格溜过去。所以 T1 额外钉了一条绝对精度的"积分器指纹"断言（`near(m.apex, 2.173781, 0.002)`），见 Task 2 Step 1。回归时不要把它当冗余额外检查删掉。
+2. **光靠 2% 相对容差拦不住它**：容差下限 2.17 × 0.98 = 2.1266，欧拉·先减速度落在 2.1274，以 0.0008 格溜过去。所以 T1 额外钉了一条绝对精度的"积分器指纹"断言（期望值由 `CONST` 现算的 `v0²/(2g)`：`near(m.apex, JUMP_V0*JUMP_V0/(2*G), 0.002)`，见自查记录 11——不写死数字，免得合法的常数重调误报），见 Task 2 Step 1。回归时不要把它当冗余额外检查删掉。
 
 ---
 
@@ -269,13 +269,15 @@ GD_ASSERT.test('T1 方块跳跃常数', function () {
   GD_ASSERT.approx(m.span, 4.04, 0.02, '@1x 跳距格');
   // 积分器指纹：上面三条的 2% 相对容差**拦不住**半隐式欧拉。
   // 实测（dt=1/240, v0=22.36, g=115）三种积分的顶点：
-  //   velocity-Verlet    2.173668  （对 2.17 偏差 0.17%，对解析值 2.173781 偏差 0.005%）
+  //   velocity-Verlet    2.173668  （对 2.17 偏差 0.17%，对解析值 v0²/(2g)（由 CONST 现算）偏差 0.005%）
   //   欧拉·先减速度     2.127420  （对 2.17 偏差 1.96% → 落在 2% 容差内，会被放过）
   //   欧拉·先加位置     2.220587  （偏差 2.33%，只是勉强红）
   // 容差下限 2.17×0.98 = 2.1266，欧拉·先减速度 距它只差 0.0008 格。
   // 所以必须再钉一条绝对精度：Verlet 距解析顶点 0.00011，两种欧拉各差约 0.046，
   // 0.002 的绝对容差把两者都关在外面，且不会因浮点噪声误红。
-  GD_ASSERT.near(m.apex, 2.173781, 0.002, 'Verlet 积分指纹');
+  GD_ASSERT.near(m.apex,
+    GD_Physics.CONST.JUMP_V0 * GD_Physics.CONST.JUMP_V0 / (2 * GD_Physics.CONST.G),
+    0.002, 'Verlet 积分指纹');
 });
 ```
 
@@ -314,11 +316,21 @@ window.GD_Physics = (function () {
     RING: { ring_pink: 15.78, ring_yellow: 23.40 }
   };
 
+  // 关卡常数表被导出去给 render/hud/tests 读，必须冻死：实测把 CONST.G 改成 1
+  // 会让 measureJump 的顶点从 2.17 变成 151.7，而物理照样"能跑"。
+  // 冻结是浅层的，四个子表各自也要冻。strict mode 下写入会抛，非严格调用方静默失败，
+  // 都比静默污染物理好。
+  Object.freeze(CONST);
+  Object.freeze(CONST.SPEEDS);
+  Object.freeze(CONST.SHIP);
+  Object.freeze(CONST.PAD);
+  Object.freeze(CONST.RING);
+
   var GROUND = 0;   // 地面线 y=0，向上为正
 
   function create(level) {
     return {
-      level: level || { objects: [], meta: { endBlock: 1000 } },
+      level: level || { segments: [{ from: 0, to: 1000, mode: 'cube', speed: 1 }], objects: [], meta: { endBlock: 1000 } },
       x: 0, y: 0, vy: 0, rot: 0,
       mode: 'cube', speedKey: 1,
       alive: true, finished: false, deadTimer: 0, attempt: 1,
@@ -339,8 +351,9 @@ window.GD_Physics = (function () {
     st.x = 0; st.y = 0; st.vy = 0; st.rot = 0;
     st.alive = true; st.finished = false; st.deadTimer = 0;
     st.attempt += 1; st.time = 0; st.onGround = true; st.percent = 0;
-    st.mode = st.level.segments ? st.level.segments[0].mode : 'cube';
-    st.speedKey = st.level.segments ? st.level.segments[0].speed : 1;
+    var seg = st.level.segments[0];
+    st.mode = seg.mode;
+    st.speedKey = seg.speed;
     st.used = {};
   }
 
@@ -429,7 +442,7 @@ window.GD_Physics = (function () {
     for (var k = 0; k < list.length; k++) {
       var o = list[k].o;
       if (o.t !== 'block') continue;
-      if (st.x < o.x - 0.02 || st.x > o.x + 1.02) continue;
+      if (st.x < o.x - 0.52 || st.x > o.x + 1.52) continue;
       var top = o.y + 1;
       if (top <= st.y + CONST.LAND_TOL && top > best) best = top;
     }
@@ -485,18 +498,22 @@ window.GD_Physics = (function () {
     }
   }
 
-  // 供测试用：平地起跳的解析实测
+  // 供测试用：平地起跳的实测。起点在起跳那一步之前，否则滞空与跳距各少算一步 dt。
   function measureJump(speedKey) {
-    var st = create({ objects: [], meta: { endBlock: 100000 } });
+    var st = create({
+      segments: [{ from: 0, to: 1e9, mode: 'cube', speed: 1 }],
+      objects: [],
+      meta: { endBlock: 1e9 }
+    });
     st.speedKey = speedKey || 1;
-    step(st, true);            // 触发起跳
     var x0 = st.x, t0 = st.time, apex = st.y, n = 0;
-    st.onGround = false;
+    step(st, true);            // 触发起跳，这一步要计入滞空与跳距
     while (st.alive && st.y > 0 && n < 2000) {
       step(st, false);
       if (st.y > apex) apex = st.y;
       n++;
     }
+    if (n >= 2000) throw new Error('measureJump: 2000 步内未落地，测量被截断');
     return { airtime: st.time - t0, apex: apex, span: st.x - x0 };
   }
 
@@ -1790,3 +1807,4 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c u
 | 8 | `error` 监听器挂在文档末尾的内联 `<script>` 里 | 5 个 parser-blocking 的 404 在解析到该脚本前就发完了，`loadErrors` 恒为 `[]`——Task 2/8 的"404 逐条减少"验证信号静默失效 | 监听器移进 `<head>`，先于任何 `<script src>` 注册 |
 | 9 | harness 可以"假绿"：测试文件在注册期抛异常会丢掉其后所有用例，`fail` 仍是 0；文件被改名后 404 混在本属预期的 `loadErrors` 里看不出来 | 后续 11 个任务里任何一次静默丢失用例都不会被发现 | `expect_tests(N)` 注册数门禁 + `__RUN_ERRORS__` 与 `__LOAD_ERRORS__` 分桶 |
 | 10 | T1 的三条 2% 相对容差**拦不住**半隐式欧拉：实测欧拉·先减速度顶点 2.127420，对 2.17 只偏 1.96%，距容差下限 2.1266 差 0.0008 格 | 计划开头"不要简化成欧拉，T1 会红"这条防线是假的；将来有人换积分器，测试照样绿，症状推迟到实玩才暴露 | T1 追加 `near(m.apex, 2.173781, 0.002)` 绝对精度指纹断言；开头那节改用实测数字重写 |
+| 11 | `respawn` 的两个三元回退会静默改成 cube/1x（`segments` 为空或拼错时没有任何测试会红）；`GROUND_Y` 用中心点、`collide` 用整框，两者对"是否站在方块上"判定不一致；`CONST` 按引用导出、可被外部改写（实测 `G=1` 后顶点变 151.7）；`measureJump` 起点取在起跳步之后、滞空与跳距各少算 1 个 dt；指纹断言写死 2.173781 会让合法的常数重调误报 | 静默换模式时后续任务全绿也没有测试会红；实测吃掉 0.0375 秒的长按起跳输入，症状会传染给 Task 9（渲染倾角）、Task 12（回放机器人）与 ship→cube 传送门；`measureJump` 撞 2000 步上限时静默返回残值当真值 | 直接读取段 0 + 默认关卡补 `segments`；中心判定改成与 `collide` 一致的整框判定；`Object.freeze` CONST 及四个子表；起点前移并对 2000 步截断抛错；指纹期望值改由 `v0²/(2g)` 现算。延后（留给 Task 4/6 实现者顺手处理）：命中框内联字面量（0.35、-0.6…+1.6、1.4×2.6 在 collide 重复两处）未收进 `CONST.HIT`；`collide` 的 `pb` 只算一次、循环中 `st.y` 被改后仍用旧框测后续对象；`GROUND_Y`/`GROUND`/`near` 命名与 physics.js:13 的"致用"错字；`SPIKE_HB` 未拆成宽高 |
