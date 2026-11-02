@@ -7,10 +7,15 @@
   // 尚未创建的那几个的 404 error 事件在解析到文档末尾的内联脚本之前就已发完，
   // 监听器挂晚了就永远抓不到（实测 loadErrors 恒为 []）。
   window.addEventListener('error', function (e) {
-    // 资源加载失败的 error 事件里 e.message / e.filename 都是 undefined，
-    // 真正可读的标识在 e.target.src 上。
-    var id = (e.target && e.target.src) ? e.target.src : String(e.message || e.filename);
-    (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(id);
+    // 两类 error 事件长得一样但意思完全相反，必须分桶：
+    //   资源 404 → e.target.src 有值，e.message 是 undefined
+    //   运行时未捕获异常 → e.message 有值，e.target 不是元素
+    // 混在一个数组里就没法断言"只发生了预期的那些 404"。
+    if (e.target && e.target.src) {
+      (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(e.target.src);
+    } else {
+      (window.__RUN_ERRORS__ || (window.__RUN_ERRORS__ = [])).push(String(e.message || e));
+    }
   }, true);
 </script>
 </head>
@@ -24,8 +29,12 @@
 <script src="replay.js"></script>
 <script src="replay.test.js"></script>
 <script>
+  // 每加一个任务就把这个数字改成"到本任务为止应有的用例总数"（计划里每个任务的
+  // Step 4 都写了预期 pass 数）。数字对不上 = 有用例文件抛异常或没注册上。
+  GD_ASSERT.expect_tests(2);
   var res = GD_ASSERT.run();
   res.loadErrors = window.__LOAD_ERRORS__ || [];
+  res.runErrors = window.__RUN_ERRORS__ || [];
   document.getElementById('out').textContent = JSON.stringify(res, null, 1);
 </script>
 </body>

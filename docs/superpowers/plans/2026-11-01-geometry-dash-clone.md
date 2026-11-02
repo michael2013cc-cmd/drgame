@@ -86,7 +86,9 @@ MCP 调用 `mcp__browser-use__evaluate_script`，脚本：
 () => ({ ready: window.__READY__ === true, r: window.__RESULTS__ })
 ```
 
-预期：`ready: true`，`r.fail` 为 `0`，`r.pass` 等于已写测试数。若 `ready` 为 false，说明有脚本抛异常——用 `list_console_messages` 取错误。
+预期 `ready: true`、`r.fail` 为 `0`、`r.registered` 等于该任务 Step 4 声明的用例总数、`r.runErrors` 为 `[]`。`r.loadErrors` 里应当**只有**该任务尚未创建的那几个文件的 404；出现任何不在预期名单里的条目，或 `runErrors` 非空，都说明有用例文件在加载期抛了异常，必须查清再继续——不要把它当噪音放过。
+
+若 `ready` 为 false，说明有脚本抛异常——用 `list_console_messages` 取错误。
 
 ---
 
@@ -104,9 +106,12 @@ MCP 调用 `mcp__browser-use__evaluate_script`，脚本：
 ```js
 window.GD_ASSERT = (function () {
   var tests = [];
+  var EXPECTED_COUNT = null;
   function test(name, fn) { tests.push({ name: name, fn: fn }); }
+  function expect_tests(n) { EXPECTED_COUNT = n; }
 
   function approx(actual, expected, tolPct, label) {
+    if (expected === 0) throw new Error((label || 'approx') + ': 期望值为 0，approx 用相对误差无意义，改用 near()');
     var err = Math.abs(actual - expected) / Math.abs(expected);
     if (err > tolPct) {
       throw new Error((label || 'approx') + ': 期望 ' + expected +
@@ -128,17 +133,28 @@ window.GD_ASSERT = (function () {
     for (var i = 0; i < tests.length; i++) {
       var t = tests[i];
       try { t.fn(); pass++; log.push('PASS ' + t.name); }
-      catch (e) { fail++; log.push('FAIL ' + t.name + ' — ' + e.message); }
+      catch (e) { fail++; log.push('FAIL ' + t.name + ' — ' + String(e && e.message || e)); }
     }
-    window.__RESULTS__ = { pass: pass, fail: fail, log: log };
+    if (EXPECTED_COUNT !== null && tests.length !== EXPECTED_COUNT) {
+      fail++;
+      log.push('FAIL 用例注册数: 期望 ' + EXPECTED_COUNT + ' 条，实得 ' + tests.length +
+        ' 条（有用例文件抛异常、为空或没加载）');
+    }
+    window.__RESULTS__ = { pass: pass, fail: fail, registered: tests.length, log: log };
     window.__READY__ = true;
     document.title = fail === 0 ? 'PASS ' + pass : 'FAIL ' + fail;
     return window.__RESULTS__;
   }
 
-  return { test: test, approx: approx, ok: ok, near: near, run: run };
+  return { test: test, approx: approx, ok: ok, near: near, expect_tests: expect_tests, run: run };
 })();
 ```
+
+三处设计说明，后面每个任务都依赖它们：
+
+- `expect_tests(N)` 是**注册数门禁**。用例文件在注册期抛异常时，其后的 `GD_ASSERT.test()` 全部丢失，但已注册的照常通过、`fail` 仍是 0——即"假绿"。门禁把"应有 N 条、实得 M 条"变成机器可判定的 FAIL。变量刻意叫 `EXPECTED_COUNT` 而非 `expected`：`approx` 的形参已经叫 `expected`（期望**值**），同名会是个读错的坑。
+- `approx` 的零期望守卫。`Math.abs(actual - 0)` 做分母，`approx(0, 0, tol)` 会静默通过、`approx(5, 0, tol)` 会抛出"偏差 Infinity%"这种无意义信息。期望为 0 的断言必须用 `near()`（绝对误差），这里让它大声失败。
+- `String(e && e.message || e)`：`throw 'oops'` 这类非 Error 抛出的 `e.message` 是 `undefined`，日志会变成无法归因的 `FAIL xxx — undefined`。
 
 - [ ] **Step 2: 写测试页**
 
@@ -154,10 +170,15 @@ window.GD_ASSERT = (function () {
   // 尚未创建的那几个的 404 error 事件在解析到文档末尾的内联脚本之前就已发完，
   // 监听器挂晚了就永远抓不到（实测 loadErrors 恒为 []）。
   window.addEventListener('error', function (e) {
-    // 资源加载失败的 error 事件里 e.message / e.filename 都是 undefined，
-    // 真正可读的标识在 e.target.src 上。
-    var id = (e.target && e.target.src) ? e.target.src : String(e.message || e.filename);
-    (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(id);
+    // 两类 error 事件长得一样但意思完全相反，必须分桶：
+    //   资源 404 → e.target.src 有值，e.message 是 undefined
+    //   运行时未捕获异常 → e.message 有值，e.target 不是元素
+    // 混在一个数组里就没法断言"只发生了预期的那些 404"。
+    if (e.target && e.target.src) {
+      (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(e.target.src);
+    } else {
+      (window.__RUN_ERRORS__ || (window.__RUN_ERRORS__ = [])).push(String(e.message || e));
+    }
   }, true);
 </script>
 </head>
@@ -171,8 +192,12 @@ window.GD_ASSERT = (function () {
 <script src="replay.js"></script>
 <script src="replay.test.js"></script>
 <script>
+  // 每加一个任务就把这个数字改成"到本任务为止应有的用例总数"（计划里每个任务的
+  // Step 4 都写了预期 pass 数）。数字对不上 = 有用例文件抛异常或没注册上。
+  GD_ASSERT.expect_tests(2);
   var res = GD_ASSERT.run();
   res.loadErrors = window.__LOAD_ERRORS__ || [];
+  res.runErrors = window.__RUN_ERRORS__ || [];
   document.getElementById('out').textContent = JSON.stringify(res, null, 1);
 </script>
 </body>
@@ -208,10 +233,12 @@ GD_ASSERT.test('S2 断言失败能被捕获', function () {
 预期返回：
 
 ```json
-{ "ready": true, "r": { "pass": 2, "fail": 0, "log": ["PASS S1 脚手架可用", "PASS S2 断言失败能被捕获"] } }
+{ "ready": true, "r": { "pass": 2, "fail": 0, "registered": 2, "log": ["PASS S1 脚手架可用", "PASS S2 断言失败能被捕获"], "loadErrors": ["http://127.0.0.1:8765/level.js", "http://127.0.0.1:8765/physics.js", "http://127.0.0.1:8765/tests/physics.test.js", "http://127.0.0.1:8765/tests/replay.js", "http://127.0.0.1:8765/tests/replay.test.js"], "runErrors": [] } }
 ```
 
 `loadErrors` 里会有 5 条 404（level.js / physics.js / physics.test.js / replay.js / replay.test.js），**这是本任务的预期状态**，从 Task 2 起逐条减少。若 `loadErrors` 是空数组，说明 `<head>` 里的监听器又挂晚了或被移走——这是个静默失效的坑，必须修好再继续。
+
+`registered` 必须等于 `expect_tests` 声明的 2，`runErrors` 必须为 `[]`。这两个门禁是本任务的全部硬价值：`pass: 2, fail: 0` 单独看毫无意义，因为用例文件在注册期抛异常时其后的 `test()` 全部丢失、`fail` 依然是 0。任何"只少了几个用例、其余全绿"的情况都会在这里变成 `fail: 1` + `FAIL 用例注册数` 日志。
 
 - [ ] **Step 5: Commit**
 
@@ -228,6 +255,7 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -
 **Files:**
 - Create: `physics.js`
 - Create: `tests/physics.test.js`
+- Modify: `tests/harness.html`（`expect_tests` 改成 3）
 
 - [ ] **Step 1: 写失败的测试 T1**
 
@@ -242,9 +270,14 @@ GD_ASSERT.test('T1 方块跳跃常数', function () {
 });
 ```
 
+同一步里把 `tests/harness.html` 的 `GD_ASSERT.expect_tests(2)` 改成 `expect_tests(3)`。
+**每个新增用例的任务都要做这件事**——门禁的数字不跟着涨，就会在本任务立刻报 `FAIL 用例注册数`。
+
 - [ ] **Step 2: 跑测试确认失败**
 
-预期：`ready: true`，`fail: 1`，log 含 `FAIL T1 方块跳跃常数 — GD_Physics is not defined`。
+预期：`ready: true`，`pass: 2, fail: 1, registered: 3`，`runErrors: []`，log 含 `FAIL T1 方块跳跃常数 — GD_Physics is not defined`。
+
+注意 `runErrors` 此时**仍是** `[]`：`GD_Physics is not defined` 是在 `run()` 的 `try/catch` 里被吃掉的用例内异常，不是未捕获的全局异常，所以不会进 `__RUN_ERRORS__`。`__RUN_ERRORS__` 只收加载期（脚本顶层）抛出的异常。
 
 - [ ] **Step 3: 写 physics.js**
 
@@ -464,7 +497,7 @@ window.GD_Physics = (function () {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-预期：`pass: 3, fail: 0`（S1、S2、T1）。`loadErrors` 只剩 level.js / replay.js / replay.test.js 三条 404。
+预期：`pass: 3, fail: 0, registered: 3, runErrors: []`（S1、S2、T1）。`loadErrors` 只剩 level.js / replay.js / replay.test.js 三条 404。
 
 **如果 T1 红了**：先看偏差方向和大小。顶点偏低约 2.3% → 说明积分被改回了半隐式欧拉；顶点偏差但滞空正常 → 说明 `G` 或 `JUMP_V0` 被改动。不要靠放宽容差解决。
 
@@ -482,6 +515,7 @@ velocity-Verlet 积分，恒定加速度下解析精确，半隐式欧拉会让�
 
 **Files:**
 - Modify: `tests/physics.test.js`（追加）
+- Modify: `tests/harness.html`（`expect_tests` 改成 5）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -508,7 +542,9 @@ GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
 
 - [ ] **Step 2: 跑测试**
 
-预期：**直接通过**（`SPEEDS` 表在 Task 2 已写入）。这一步的意义是把"门上的数字是名义标签不是真实倍率"这个反直觉事实钉进回归测试——将来谁把它改成 `speed * multiplier` 就会红。
+先把 `tests/harness.html` 的 `GD_ASSERT.expect_tests(3)` 改成 `expect_tests(5)`（本任务新增 T2、T2b 两条）。
+
+预期：**直接通过**，`pass: 5, fail: 0, registered: 5, runErrors: []`（`SPEEDS` 表在 Task 2 已写入）。这一步的意义是把"门上的数字是名义标签不是真实倍率"这个反直觉事实钉进回归测试——将来谁把它改成 `speed * multiplier` 就会红。
 
 若 `T2b` 的滞空比值红：说明 `SPEEDS` 被改成了线性倍率。对照 spec §4.1 表格恢复。
 
@@ -524,8 +560,11 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -
 
 **Files:**
 - Modify: `tests/physics.test.js`（追加）
+- Modify: `tests/harness.html`（`expect_tests` 改成 8）
 
 - [ ] **Step 1: 写失败的测试**
+
+追加到 `tests/physics.test.js`（本任务新增 T5a/T5b/T5c 三条；Step 3 是**替换** T5b 不是再加一条，所以总数停在 8）：
 
 ```js
 GD_ASSERT.test('T5a 撞尖刺死亡并从 0% 重开', function () {
@@ -595,7 +634,7 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-预期：`pass: 8, fail: 0`（S1 S2 T1 T2 T2b T5a T5b T5c）。
+预期：`pass: 8, fail: 0, registered: 8, runErrors: []`（S1 S2 T1 T2 T2b T5a T5b T5c）。
 
 - [ ] **Step 5: Commit**
 
@@ -610,10 +649,11 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -
 **Files:**
 - Create: `level.js`
 - Modify: `tests/physics.test.js`（追加校验测试）
+- Modify: `tests/harness.html`（`expect_tests` 改成 11）
 
 - [ ] **Step 1: 写校验测试**
 
-追加到 `tests/physics.test.js`：
+追加到 `tests/physics.test.js`（并把 `expect_tests` 改为 11，本任务新增 L1/L2/L3 三条）：
 
 ```js
 GD_ASSERT.test('L1 关卡数据自洽', function () {
@@ -648,7 +688,7 @@ GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-预期：三条都 `GD_Level is not defined`。
+预期：`registered: 11, fail: 3, runErrors: []`，三条都报 `GD_Level is not defined`（用例内异常，被 `run()` 的 try/catch 吃掉，不进 `__RUN_ERRORS__`）。`loadErrors` 此时还剩 level.js / replay.js / replay.test.js 三条。
 
 - [ ] **Step 3: 写 level.js**
 
@@ -777,7 +817,7 @@ window.GD_Level = (function () {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-预期：`pass: 11, fail: 0`。
+预期：`pass: 11, fail: 0, registered: 11, runErrors: []`。`loadErrors` 只剩 replay.js / replay.test.js 两条。
 
 若 `L2` 红：段落 `from/to/speed` 与上表注释不一致，按注释修。
 
@@ -797,8 +837,11 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add level.js tests
 
 **Files:**
 - Modify: `tests/physics.test.js`（追加）
+- Modify: `tests/harness.html`（`expect_tests` 改成 13）
 
 - [ ] **Step 1: 写测试**
+
+追加 P1/P2 两条到 `tests/physics.test.js`，并把 `expect_tests` 改为 13：
 
 ```js
 GD_ASSERT.test('P1 跳板/跳环可达高度符合 spec §4.3', function () {
@@ -849,7 +892,7 @@ if (st.x + 0.5 > o.x && st.x - 0.5 < o.x + 1 && wasY >= o.y + 0.35 && st.y <= o.
 
 - [ ] **Step 3: 跑测试确认通过**
 
-预期：`pass: 13, fail: 0`。
+预期：`pass: 13, fail: 0, registered: 13, runErrors: []`。
 
 - [ ] **Step 4: Commit**
 
@@ -863,8 +906,11 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tes
 
 **Files:**
 - Modify: `tests/physics.test.js`（追加）
+- Modify: `tests/harness.html`（`expect_tests` 改成 16）
 
 - [ ] **Step 1: 写测试**
+
+追加 T4/T4b/T4c 三条到 `tests/physics.test.js`，并把 `expect_tests` 改为 16：
 
 ```js
 GD_ASSERT.test('T4 飞船速度上限钳制', function () {
@@ -918,7 +964,7 @@ st.speedKey = sg ? sg.speed : 1;
 
 - [ ] **Step 4: 跑测试确认通过**
 
-预期：`pass: 16, fail: 0`。
+预期：`pass: 16, fail: 0, registered: 16, runErrors: []`。
 
 - [ ] **Step 5: Commit**
 
@@ -933,9 +979,11 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tes
 **Files:**
 - Modify: `tests/physics.test.js`（追加 T6 / T6b / D1）
 - Modify: `tests/assert.js`（追加 `SOURCES` 预取）
-- Modify: `tests/harness.html`（末尾脚本改为等预取完成再 run）
+- Modify: `tests/harness.html`（末尾脚本改为等预取完成再 run，`expect_tests` 涨到 19）
 
 - [ ] **Step 1: 写测试**
+
+追加 T6 / T6b / D1 三条到 `tests/physics.test.js`：
 
 ```js
 GD_ASSERT.test('T6 随机输入 3000 步无异常无 NaN', function () {
@@ -985,14 +1033,16 @@ GD_ASSERT.SOURCES = {};
 })();
 ```
 
-`harness.html` 的 `GD_ASSERT.run()` 调用前需等预取完成——把末尾脚本改为：
+`harness.html` 的 `GD_ASSERT.run()` 调用前需等预取完成——把末尾脚本改为（`expect_tests` 涨到 19，且必须在 `run()` **之前**调用，所以它落在轮询循环里 `run()` 的那一行上面，不是循环外面）：
 
 ```js
   var waited = 0;
   (function wait() {
     if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
+      GD_ASSERT.expect_tests(19);
       var res = GD_ASSERT.run();
       res.loadErrors = window.__LOAD_ERRORS__ || [];
+      res.runErrors = window.__RUN_ERRORS__ || [];
       res.sources = Object.keys(GD_ASSERT.SOURCES);
       document.getElementById('out').textContent = JSON.stringify(res, null, 1);
       return;
@@ -1003,7 +1053,7 @@ GD_ASSERT.SOURCES = {};
 
 - [ ] **Step 2: 跑测试确认通过**
 
-预期：`pass: 19, fail: 0`。若 `T6b` 的 x 越界，说明 `respawn()` 漏了某个字段——对照 `create()` 逐字段检查。
+预期：`pass: 19, fail: 0, registered: 19, runErrors: []`。若 `T6b` 的 x 越界，说明 `respawn()` 漏了某个字段——对照 `create()` 逐字段检查。
 
 `D1` 在此任务时 `render.js`/`hud.js`/`input.js`/`audio.js` 还不存在，预取只会拿到 2 个源文件——预取的 `waited > 40` 超时兜底正是为此而写，D1 检查的 `physics.js` 已就位，不受影响。
 
@@ -1524,11 +1574,11 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add input.js audio
 **Files:**
 - Create: `tests/replay.js`
 - Create: `tests/replay.test.js`
-- Modify: `tests/harness.html`（已含这两个 script 标签）
+- Modify: `tests/harness.html`（两个 `<script src>` 标签 Task 1 就已写好，本任务只把 `expect_tests` 涨到 20）
 
 - [ ] **Step 1: 写回放测试**
 
-`tests/replay.test.js`：
+`tests/replay.test.js`（这是最后一条用例，累计 20 条；把 `GD_ASSERT.expect_tests(...)` 改成 20）：
 
 ```js
 GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
@@ -1551,7 +1601,7 @@ GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-预期：`FAIL T3 ... 未通关`，并给出首次死亡的 x 坐标。**这个 x 就是下一步要修的关卡位置。**
+预期：`FAIL T3 ... 未通关`，并给出首次死亡的 x 坐标；`registered: 20, fail: 1, runErrors: []`。**这个 x 就是下一步要修的关卡位置。**
 
 - [ ] **Step 3: 用探针定位每个失败点**
 
@@ -1644,7 +1694,7 @@ window.GD_Replay = (function () {
 
 - [ ] **Step 5: 跑测试确认通过**
 
-预期：`pass: 20, fail: 0`，T3 显示通关。
+预期：`pass: 20, fail: 0, registered: 20, runErrors: []`，T3 显示通关。`loadErrors` 应为 `[]`（replay.js / replay.test.js 至此都已存在）。
 
 - [ ] **Step 6: Commit**
 
@@ -1692,7 +1742,7 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git rm tests/visual-sm
 
 - [ ] **Step 5: 跑完整测试 + 最终截图**
 
-预期 `pass: 20, fail: 0`，`loadErrors: []`（所有文件都已存在）。
+预期 `pass: 20, fail: 0, registered: 20, runErrors: []`，`loadErrors: []`（所有文件都已存在）。
 
 `take_screenshot` 存档最终画面，与 `gd_ref/gd3.jpg` 并排比对布局。
 
@@ -1727,3 +1777,4 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c u
 | 6 | `wasAlive` 是模块级变量 | 多实例/重开测试串状态 | 移入 `create()` 的实例字段 |
 | 7 | spec §5 的"physics 不引用渲染层"无验证 | 架构约束会随时间退化 | 新增 D1，用 fetch 预取源码做静态断言 |
 | 8 | `error` 监听器挂在文档末尾的内联 `<script>` 里 | 5 个 parser-blocking 的 404 在解析到该脚本前就发完了，`loadErrors` 恒为 `[]`——Task 2/8 的"404 逐条减少"验证信号静默失效 | 监听器移进 `<head>`，先于任何 `<script src>` 注册 |
+| 9 | harness 可以"假绿"：测试文件在注册期抛异常会丢掉其后所有用例，`fail` 仍是 0；文件被改名后 404 混在本属预期的 `loadErrors` 里看不出来 | 后续 11 个任务里任何一次静默丢失用例都不会被发现 | `expect_tests(N)` 注册数门禁 + `__RUN_ERRORS__` 与 `__LOAD_ERRORS__` 分桶 |
