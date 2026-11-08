@@ -889,21 +889,7 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "
 追加到 `tests/physics.test.js`（并把 `expect_tests` 改为 11，本任务新增 L1/L2/L3 三条）：
 
 ```js
-GD_ASSERT.test('L1 关卡数据自洽', function () {
-  var errs = GD_Level.validate(GD_Level.crossbeat);
-  GD_ASSERT.ok(errs.length === 0, '校验错误: ' + errs.join(' | '));
-});
-
-GD_ASSERT.test('L2 段落时长合计 32.0 秒', function () {
-  var lv = GD_Level.crossbeat, t = 0, S = GD_Physics.CONST.SPEEDS;
-  for (var i = 0; i < lv.segments.length; i++) {
-    var sg = lv.segments[i];
-    t += (sg.to - sg.from) / S[sg.speed];
-  }
-  GD_ASSERT.approx(t, 32.0, 0.02, '总时长秒');
-});
-
-GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍、回方块门必定触发', function () {
+GD_ASSERT.test('L3 对象不越界、无重复、尖刺不重叠、门框不压障碍、天花板连续且飞不过顶', function () {
   var lv = GD_Level.crossbeat, objs = lv.objects, end = lv.meta.endBlock;
   for (var i = 0; i < objs.length; i++) {
     GD_ASSERT.ok(objs[i].x >= 0 && objs[i].x <= end, '对象越界: ' + objs[i].t + '@' + objs[i].x);
@@ -947,6 +933,46 @@ GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍�
     '贴地跑过回方块门后应切成 cube，实为 ' + g2.mode + '（x=' + g2.x.toFixed(2) + '）');
   GD_ASSERT.ok(g2.speedKey === 1,
     '贴地跑过降速门后应回到 1x，实为 ' + g2.speedKey);
+
+  // 关卡里不该有位置完全相同的重复对象。天花板（y=9，x=118…252）会与通道里原有的
+  // y=9 块（x=126/142/158/190/222/230）落在同一格——物理上无害（判定幂等），
+  // 但那是冗余数据，而且会让人以为关卡里有两套东西。objects 拼好后统一去重过。
+  var seenDup = Object.create(null), dupCount = 0;
+  for (var di = 0; di < objs.length; di++) {
+    var dk = objs[di].t + '@' + objs[di].x + ',' + objs[di].y;
+    if (seenDup[dk]) dupCount++; else seenDup[dk] = true;
+  }
+  GD_ASSERT.ok(dupCount === 0, '关卡里有 ' + dupCount + ' 个位置重复的对象');
+
+  // 飞船段的天花板必须**连续**，而且玩家飞不过顶。
+  // 以前这里没有封顶：实测从切船门起一直按住能爬到 y=46.55，从柱阵顶上飞过整个
+  // 飞船段，还能以 2x 直接飞过收尾段通关（spec §13 第 11 条）——关卡 1/3 的挑战是空的。
+  // 天花板挡在 y=9 之后，飞船最高只到 8.72，按住不放会在 x≈120 撞顶死。
+  var CEIL_Y = 9, CEIL_X0 = 118, CEIL_X1 = 252;
+  var ceilAt = Object.create(null);
+  for (var ci = 0; ci < objs.length; ci++) {
+    if (objs[ci].t === 'block' && objs[ci].y === CEIL_Y) ceilAt[objs[ci].x] = true;
+  }
+  var ceilGaps = [];
+  for (var cx = CEIL_X0; cx <= CEIL_X1; cx++) if (!ceilAt[cx]) ceilGaps.push(cx);
+  GD_ASSERT.ok(ceilGaps.length === 0,
+    '飞船段天花板必须连续（x∈[' + CEIL_X0 + ',' + CEIL_X1 + '] 每格一块），缺口 ' +
+    ceilGaps.length + ' 处: ' + ceilGaps.slice(0, 8).join(','));
+
+  // 行为层：按住不放也飞不过顶，更不可能以飞船状态通关。
+  var holdSt = GD_Physics.create(lv);
+  holdSt.x = 111.5; holdSt.mode = 'ship'; holdSt.speedKey = 1;
+  holdSt.y = 0; holdSt.vy = 0; holdSt.onGround = false;
+  var holdTopY = 0;
+  for (var hs = 0; hs < 240 * 40 && holdSt.alive && !holdSt.finished; hs++) {
+    GD_Physics.step(holdSt, true);
+    if (holdSt.y > holdTopY) holdTopY = holdSt.y;
+  }
+  GD_ASSERT.ok(holdTopY < CEIL_Y,
+    '按住不放也飞不过天花板（y=' + CEIL_Y + '），实测最高 y=' + holdTopY.toFixed(2));
+  GD_ASSERT.ok(!holdSt.finished,
+    '按住不放不该能通关（那说明又从顶上飞过去了），实测 x=' + holdSt.x.toFixed(1) +
+    ' percent=' + holdSt.percent.toFixed(1) + ' alive=' + holdSt.alive);
 });
 ```
 
@@ -1146,6 +1172,20 @@ window.GD_Level = (function () {
     for (var i = 0; i < h; i++) a.push({ x: x, y: i, t: 'block' });
     return a;
   }
+  // 飞船段的天花板：一条连续的顶棚（每格一块），封掉"从柱阵顶上飞过去"这条旁路。
+  // 为什么在 y=9：天花板必须**低于**通道里最高的柱块（y=10）。
+  // 放在 y=11 的话，飞船仍能以 y=10.7 从所有柱顶飞过（所有柱块都 ≤ y=10），等于没封；
+  // 放在 y=9，飞船在这个区间里最高只到 8.7（再高就进 0.3 核心框的致死窗口），
+  // 飞到 x=126/142/190/238（柱块到 y=10 的列）时必须俯冲——通道才成为真挑战。
+  // 为什么止于 x=252：portal_cube 在 x=253，它的触发框是 x∈[253, 254.4]，
+  // 天花板若铺到 253，方块与门框在 x 上、在 y 上都重叠（y=9 落在框 [0.5,256.5] 内），
+  // L3 那条"门框不压障碍"就会红；铺到 252 时方块占 x∈[252,253]，
+  // 与门框只在边界相接（overlap 用的是严格不等号）→ 不算重叠 ✓。
+  function ceiling(x0, x1, y) {
+    var a = [];
+    for (var x = x0; x <= x1; x++) a.push({ x: x, y: y, t: 'block' });
+    return a;
+  }
 
   var objects = [].concat(
     // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍（1 拍 = 4.046 格，8 格 = 1.98 拍）
@@ -1189,6 +1229,10 @@ window.GD_Level = (function () {
     { x: 230, y: 0, t: 'block' }, { x: 230, y: 1, t: 'block' }, { x: 230, y: 9, t: 'block' },
     pillar(238, 4), { x: 238, y: 10, t: 'block' },
 
+    // 飞船段的天花板（连续，每格一块）：为什么是 y=9、为什么止于 252，见 ceiling() 的注释。
+    // 起点 118 = 飞船段起点：118 之前玩家还是方块（贴地跑），天花板用不上。
+    ceiling(118, 252, 9),
+
     // 回方块：切船门在 x=112、降速门在 x=116，两扇门都贴地（y=0.5）。
     // 触发点是玩家前沿（x+0.5）碰到门的 x，所以实际切换发生在 x≈111.5 / 115.5，
     // 段落的 118 / 254 只是主题分段点——两者不是一回事，别再写成"严格相等"。
@@ -1219,6 +1263,21 @@ window.GD_Level = (function () {
     spikeRun(340, 2),   // 三连刺打不过：y>=0.55 的窗口只有 3.49 格，三刺要 3.55
     { x: 360, y: 0, t: 'finish' }   // 旗子与 endBlock 同点：越过 x=360 的瞬间判通关
   );
+
+  // 天花板会与通道里原有的 y=9 块（x=126/142/158/190/222/230）落在同一格：
+  // 位置完全相同的方块是冗余数据——物理上无害（判定是幂等的），但会让人以为关卡里
+  // 有两套东西，而且对象数虚高。这里按 (类型,x,y) 去重，保留第一次出现的那一个。
+  // 去重要在**所有**对象都拼好之后做，天花板是最后拼进来的。
+  objects = (function (list) {
+    var seen = Object.create(null), out = [];
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i], key = o.t + '@' + o.x + ',' + o.y;
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push(o);
+    }
+    return out;
+  })(objects);
 
   var crossbeat = {
     meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360 },
@@ -1279,6 +1338,7 @@ window.GD_Level = (function () {
 
   return { crossbeat: crossbeat, validate: validate, VALID_TYPES: VALID_TYPES };
 })();
+
 ```
 
 ---
@@ -2541,6 +2601,92 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add render.js tests/visual-s
 
 ---
 
+## Task 9.5: 飞船段封顶（补做）
+
+> 这一节不在原计划里，是接手后实玩前必须补的：**飞船段可以直接绕过**。
+> 原计划把它记在 Task 13 的"关卡重设计"里，但它会连带改通关序列，
+> 放在 Task 12 之前做，fixture 只需要生成一次。
+
+**Files:**
+- Modify: `level.js`
+- Modify: `tests/physics.test.js`（L3 补断言）
+- Modify: `docs/superpowers/research/t12-replay-fixture.js`（重新生成）
+
+### 为什么
+
+飞船段 118–254 是"上下柱阵通道"，但它**根本没有天花板**：实测玩家按住不放能爬到 **y=46.55** 格，
+预研那条"已验证通关"的序列就是**从柱阵顶上飞过去的**（y=14~46 格），根本没考验过通道。后果：
+
+1. 飞船段这个挑战可以直接绕过（关卡 1/3 是空白）。
+2. Task 7 的通高门框因此留着一个漏洞：玩家能飞到门框上沿之上，以 2x 直接飞过整个收尾段通关。
+3. 机器人的"通关"从来没有验证过通道本身可不可走。
+
+### 天花板放在哪：y=9，x∈[118,252]
+
+- **为什么不是 y=11**：天花板必须**低于**通道里最高的柱块（y=10）。放 y=11 的话
+  飞船仍能以 y=10.7 从所有柱顶飞过（所有柱块都 ≤ y=10）——等于没封。
+  放 y=9 → 飞船最高 y=8.72（再高就进 0.3 核心框的致死窗口 (8.7, 9.3)）→
+  飞到 x=126/142/190/238（柱块到 y=10 的列）时必须俯冲，通道才成为真挑战。
+- **为什么止于 x=252**：`portal_cube` 在 x=253，触发框是 x∈[253, 254.4]。
+  天花板若铺到 253，方块与门框在 x 上、在 y 上都重叠（y=9 落在框 [0.5, 256.5] 内），
+  L3 的"门框不压障碍"会红；铺到 252 则方块占 x∈[252,253]，与门框只在边界相接
+  （`overlap` 用严格不等号）→ 不算重叠。
+- **为什么起点是 118**：118 之前玩家还是方块（贴地跑），天花板用不上。
+
+`level.js` 新增（`objects` 拼好后统一去重，天花板与原有的 y=9 块会重叠）：
+
+```js
+  function ceiling(x0, x1, y) {
+    var a = [];
+    for (var x = x0; x <= x1; x++) a.push({ x: x, y: y, t: 'block' });
+    return a;
+  }
+```
+
+配套按 `(类型,x,y)` 去重（天花板与通道里原有的 y=9 块在 x=126/142/158/190/222/230 重叠），
+去重后对象数 **251**、重复 **0**。
+
+### 可通性：封顶之前先证明过
+
+用真实物理做束搜索（宏步 12 帧、每步 6 种按键模式、按"下一根柱子安全带"打分）：
+
+```
+不加天花板：走通（最高 y=22.28）
+加天花板：y<=6 走通 / y<=7 走通 / y<=8 走通 / y<=9 走通 / y<=10 走通 / y<=11 走通
+```
+
+**即使把天花板压到 y≤6（比通道最窄处还紧），飞船仍然能钻过去**——所以封顶是可验证安全的。
+
+### 通关序列必须重新生成
+
+封顶后旧序列在 x=122.55 撞死（它原本从顶上飞过）。新序列的做法：
+方块段与收尾段沿用旧动作（那两段没受影响），飞船段用**反馈控制器**重新生成——
+目标 = 下一根柱子安全带的心、控制 vy 跟过去、**每 12 帧决策一次**
+（每帧决策会生成上千个事件，太脆；0.05 s 一段像人按）。生成后独立回放验证：
+
+```
+finished=true  percent=100.0000  time=32.0625s  x=360.0191
+切换点 mode→ship 111.520 / speed→2 115.501 / mode→cube 252.551 / speed→1 253.519
+逐事件 ±1 步扰动 210/340（61.8%）仍通关
+```
+
+**一个坑**：切回方块那一刻必须**松开**。真实回放里 `held` 会沿用飞船段最后一个按键状态，
+如果最后一下是按住，方块一落地就起跳，收尾段的跳跃时刻全错（实测死在 x=263.7 的第一根尖刺）。
+
+### 验收
+
+- `tests/physics.test.js` 的 L3 补三条：天花板**连续**、**没有重复对象**、**按住不放飞不过顶且不能通关**。
+- 变异测试（全红）：去掉整条天花板 / 留一个缺口 / 降到 y=11 / 去掉去重。
+- cube 段的可通性扫描不受影响（单刺 20/65、双刺 10/65、2 格柱 30/65、`zeroTapGroups: []`）。
+
+- [ ] **Step 1: Commit**
+
+```bash
+cd "C:/Users/user/Documents/My Games/drgame" && git add level.js tests/physics.test.js docs/superpowers/research/t12-replay-fixture.js docs/superpowers/plans/2026-11-01-geometry-dash-clone.md docs/superpowers/specs/2026-11-01-geometry-dash-clone-design.md docs/superpowers/HANDOFF-2026-11-08.md && git commit -m "fix: 飞船段没有天花板，整个挑战可以从顶上飞过去"
+```
+
+---
+
 ## Task 10: HUD
 
 **Files:**
@@ -2850,11 +2996,12 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.j
 
 另外两条记录（不阻塞，但要知道）：
 
-- **飞船段 118–254 根本没有天花板**：实测 `y≥11` 以上全程无碰撞，机器人是从柱阵**顶上**飞过去的。
-  （Task 7 之后这个"没天花板"还有个后果：玩家按住不放能爬到 y≈173（2x）/ 216（1x），
-  **飞到 y≥256.5 仍会错过回方块门**——通高门框只解决了"通道内/出口附近"这一段，见 spec §13。）
-  而且致命判定用 0.3×0.3 的缩小核心框 → 柱列之间 0.4 格宽的"贴缝"也能擦过去。
-  这是关卡的设计漏洞（不是 bug），要改属于关卡重设计，本任务不碰。
+- ~~**飞船段 118–254 根本没有天花板**~~ → **Task 9.5 已封顶**（`level.js` 的 `ceiling(118, 252, 9)`）。
+  封之前实测玩家按住不放能爬到 y=46.55，机器人那条"已验证通关"的序列就是从柱阵**顶上**飞过去的
+  （y=14~46 格），根本没考验过通道；封之后飞船最高 y=8.72，按住不放会在 x≈120 撞顶死。
+  **仓库里那份 `docs/superpowers/research/t12-replay-fixture.js` 已经按封顶后的关卡重新生成**
+  （170 事件，飞船段用反馈控制器：目标 = 下一根柱子安全带的心）。
+  顺带一条仍然成立的：致命判定用 0.3×0.3 的缩小核心框 → 柱列之间 0.4 格宽的"贴缝"也能擦过去。
 - 物理上限（隔离实测，65 个起跳阈值）：柱高 1/2 格 41/28 可过，**柱高 3 格及以上 0/65**；
   刺宽 1/2 格 19/9 可过，**刺宽 3 格及以上 0/65**（需连续 y≥0.55 跨度 3.550 格，实测窗口只有 3.462 格）。
   关卡里已经没有 3 格柱和 3 连刺了，别再放回去。

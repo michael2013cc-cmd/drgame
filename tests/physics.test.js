@@ -191,7 +191,7 @@ GD_ASSERT.test('L2 段落时长合计 32.0 秒', function () {
   GD_ASSERT.approx(t, 32.0, 0.02, '总时长秒');
 });
 
-GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍、回方块门必定触发', function () {
+GD_ASSERT.test('L3 对象不越界、无重复、尖刺不重叠、门框不压障碍、天花板连续且飞不过顶', function () {
   var lv = GD_Level.crossbeat, objs = lv.objects, end = lv.meta.endBlock;
   for (var i = 0; i < objs.length; i++) {
     GD_ASSERT.ok(objs[i].x >= 0 && objs[i].x <= end, '对象越界: ' + objs[i].t + '@' + objs[i].x);
@@ -235,6 +235,46 @@ GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍�
     '贴地跑过回方块门后应切成 cube，实为 ' + g2.mode + '（x=' + g2.x.toFixed(2) + '）');
   GD_ASSERT.ok(g2.speedKey === 1,
     '贴地跑过降速门后应回到 1x，实为 ' + g2.speedKey);
+
+  // 关卡里不该有位置完全相同的重复对象。天花板（y=9，x=118…252）会与通道里原有的
+  // y=9 块（x=126/142/158/190/222/230）落在同一格——物理上无害（判定幂等），
+  // 但那是冗余数据，而且会让人以为关卡里有两套东西。objects 拼好后统一去重过。
+  var seenDup = Object.create(null), dupCount = 0;
+  for (var di = 0; di < objs.length; di++) {
+    var dk = objs[di].t + '@' + objs[di].x + ',' + objs[di].y;
+    if (seenDup[dk]) dupCount++; else seenDup[dk] = true;
+  }
+  GD_ASSERT.ok(dupCount === 0, '关卡里有 ' + dupCount + ' 个位置重复的对象');
+
+  // 飞船段的天花板必须**连续**，而且玩家飞不过顶。
+  // 以前这里没有封顶：实测从切船门起一直按住能爬到 y=46.55，从柱阵顶上飞过整个
+  // 飞船段，还能以 2x 直接飞过收尾段通关（spec §13 第 11 条）——关卡 1/3 的挑战是空的。
+  // 天花板挡在 y=9 之后，飞船最高只到 8.72，按住不放会在 x≈120 撞顶死。
+  var CEIL_Y = 9, CEIL_X0 = 118, CEIL_X1 = 252;
+  var ceilAt = Object.create(null);
+  for (var ci = 0; ci < objs.length; ci++) {
+    if (objs[ci].t === 'block' && objs[ci].y === CEIL_Y) ceilAt[objs[ci].x] = true;
+  }
+  var ceilGaps = [];
+  for (var cx = CEIL_X0; cx <= CEIL_X1; cx++) if (!ceilAt[cx]) ceilGaps.push(cx);
+  GD_ASSERT.ok(ceilGaps.length === 0,
+    '飞船段天花板必须连续（x∈[' + CEIL_X0 + ',' + CEIL_X1 + '] 每格一块），缺口 ' +
+    ceilGaps.length + ' 处: ' + ceilGaps.slice(0, 8).join(','));
+
+  // 行为层：按住不放也飞不过顶，更不可能以飞船状态通关。
+  var holdSt = GD_Physics.create(lv);
+  holdSt.x = 111.5; holdSt.mode = 'ship'; holdSt.speedKey = 1;
+  holdSt.y = 0; holdSt.vy = 0; holdSt.onGround = false;
+  var holdTopY = 0;
+  for (var hs = 0; hs < 240 * 40 && holdSt.alive && !holdSt.finished; hs++) {
+    GD_Physics.step(holdSt, true);
+    if (holdSt.y > holdTopY) holdTopY = holdSt.y;
+  }
+  GD_ASSERT.ok(holdTopY < CEIL_Y,
+    '按住不放也飞不过天花板（y=' + CEIL_Y + '），实测最高 y=' + holdTopY.toFixed(2));
+  GD_ASSERT.ok(!holdSt.finished,
+    '按住不放不该能通关（那说明又从顶上飞过去了），实测 x=' + holdSt.x.toFixed(1) +
+    ' percent=' + holdSt.percent.toFixed(1) + ' alive=' + holdSt.alive);
 });
 
 // P1/P2 复用上面 LV 助手（与文件里其它用例保持一致：关卡带非空 segments）。
