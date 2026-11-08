@@ -25,7 +25,19 @@ window.GD_Physics = (function () {
       PAD_H: 0.35,                          // 跳板顶面厚度
       RING_X0: -0.6, RING_X1: 1.6,          // 跳环触发框相对环心的横向范围
       RING_Y0: -0.6, RING_Y1: 1.6,          // 跳环触发框相对环心的纵向范围
-      GATE_W: 1.4, GATE_H: 2.6              // 传送门/速度门触发框
+      // 传送门/速度门的触发框从门的底边（o.y）往上延伸 **GATE_H** 格——通高，不按门型特判。
+      // 高度是**自调参项**（原版是否通高没有可核实的依据，见 spec §13），按可推导的上界取值：
+      // 飞船爬升被 CONST.SHIP.CAP_UP 钳在 16 格/s；玩家在切船门 x=111.5 时还贴着地面（y≈0），
+      // 到回方块门 x=252.5 最多有 (252.5−111.5)/10.386 = 13.6 s（按最慢的 1x 算）
+      // → 最多爬 217 格。256 盖得住（余量约 39 格）；24 盖不住——
+      // 实测从 x=111.5 起按住不放，x=252.4 时 y=177.83，两扇门（框 [0.5,24.5]）都够不着，
+      // 玩家以飞船 2x 直接飞过整个收尾段通关。
+      // 注意这仍然只是**上界**：关卡的飞船段没有封顶，玩家理论上还能飞到 y≥256.5 错过门，
+      // 那个洞记在 spec §13（要靠关卡封顶解决，不是靠门框）。
+      // 框的底边仍是门的 y：地面上的玩家（框 [0,1]）能吃到 y=0.5 的门
+      // （框 [0.5,256.5]，1 > 0.5 成立）；不要把底边也改成 0——
+      // 那会让悬在半空的门被地面上的玩家触发，语义就错了。
+      GATE_W: 1.4, GATE_H: 256
     }
   };
 
@@ -217,7 +229,16 @@ window.GD_Physics = (function () {
       } else if (o.t === 'portal_ship' || o.t === 'portal_cube') {
         if (overlap(pb, { x0: o.x, x1: o.x + CONST.HIT.GATE_W, y0: o.y, y1: o.y + CONST.HIT.GATE_H })) {
           st.mode = o.t === 'portal_ship' ? 'ship' : 'cube';
-          if (st.mode === 'cube') { st.onGround = st.y <= GROUND + CONST.LAND_TOL; st.rot = Math.round(st.rot / 90) * 90; }
+          if (st.mode === 'cube') {
+            st.onGround = st.y <= GROUND + CONST.LAND_TOL;
+            // 判为站在地面上时必须同时清零 vy："在地面 ⇒ vy == 0"是不变式，
+            // 飞船残余的 vy 带进方块模式会让方块多飞一下（handoff 缺陷清单第 1 条）。
+            // 在地面之外（onGround 为假）**保留** vy：切换只换操作方式，不该凭空吃掉
+            // 玩家上升的动量（动量连续性）。空中保留并不消除"多飞一下"——
+            // 那是方块模式本来就有的跳跃弧线，留 Task 13 手感校准。
+            if (st.onGround) st.vy = 0;
+            st.rot = Math.round(st.rot / 90) * 90;
+          }
         }
       } else if (o.t === 'speed_2x' || o.t === 'speed_1x' || o.t === 'speed_3x' || o.t === 'speed_4x') {
         if (overlap(pb, { x0: o.x, x1: o.x + CONST.HIT.GATE_W, y0: o.y, y1: o.y + CONST.HIT.GATE_H })) {

@@ -223,10 +223,11 @@ GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍�
     }
   }
   // 回方块的门与降速门必须真的能触发。
-  // 玩家贴地时框是 [0,1]；门放在 y=1.0 时触发框是 [1,3.6]，两者只在 y=1 处相接，
+  // 玩家贴地时框是 [0,1]；门放在 y=1.0 时触发框是 [1, 1+GATE_H]，两者只在 y=1 处相接，
   // 而 overlap 用的是严格不等号 → 永远不重叠 → 门形同虚设：
   // 实测贴地跑过 x=253 仍是飞船模式，随后撞死在 x=264 的第一根尖刺。
-  // 门贴地（y=0.5）后触发窗口是 y∈(-0.5, 3.1)，松手落地的玩家必然命中。
+  // 门贴地（y=0.5）后触发窗口是 y∈(-0.5, 0.5+GATE_H)，GATE_H=256 时是 (-0.5, 256.5)，
+  // 松手落地的玩家必然命中。
   var g2 = GD_Physics.create(lv);
   g2.mode = 'ship'; g2.speedKey = 2; g2.x = 250; g2.y = 0; g2.vy = 0; g2.onGround = false;
   for (var s2 = 0; s2 < 240 * 3 && g2.x < 258; s2++) GD_Physics.step(g2, false);
@@ -400,4 +401,178 @@ GD_ASSERT.test('P2 跳环只能触发一次', function () {
     if (Math.abs(ctl.vy - RING) < 1e-6) ctlTriggers++;
   }
   GD_ASSERT.ok(ctlTriggers === 0, '没有环就不该有触发，实测 ' + ctlTriggers + ' 次');
+});
+
+GD_ASSERT.test('T4 飞船速度上限钳制', function () {
+  function shipVy(held, seconds) {
+    // 关卡必须带非空 segments：Task 2 拆掉了 respawn 的静默回退，
+    // 缺 segments 时死亡重开会抛 TypeError，而不是悄悄退回 cube/1x。
+    // 本用例测的是飞船模式，所以段落的 mode 写 ship、speed 与 create() 的初值一致。
+    var st = GD_Physics.create({
+      segments: [{ from: 0, to: 100000, mode: 'ship', speed: 1 }],
+      objects: [],
+      meta: { endBlock: 100000 }
+    });
+    st.mode = 'ship'; st.y = 50;
+    // 起点必须高于 2 秒的下坠距离：飞船碰到地面会被钳成 y=0、vy=0
+    // （stepShip 的 `if (st.y < GROUND)`），落在地上的飞船根本测不出 -19.2 的下限钳位
+    // （实测从 y=5 起松手 2 秒，vy=0）。实测 2 秒最多下坠 35.25 格（y=50 → 14.749），
+    // 50 格留足余量。
+    for (var i = 0; i < 240 * seconds; i++) GD_Physics.step(st, held);
+    return st.vy;
+  }
+  GD_ASSERT.approx(shipVy(true, 2), 16.0, 0.02, '按住 2 秒收敛到 +16.0');
+  GD_ASSERT.approx(shipVy(false, 2), -19.2, 0.02, '松开 2 秒收敛到 -19.2');
+});
+
+GD_ASSERT.test('T4b 飞船水平速度与方块模式完全相同', function () {
+  function run(mode) {
+    // segments 只在死亡重开时才起作用，本用例不会死；固定写 ship/speed 2 是为了
+    // 不给 run('cube') 那一路引入第二个变量（两路的差别只应该是 mode）。
+    var st = GD_Physics.create({
+      segments: [{ from: 0, to: 100000, mode: 'ship', speed: 2 }],
+      objects: [],
+      meta: { endBlock: 100000 }
+    });
+    st.mode = mode; st.speedKey = 2;
+    for (var i = 0; i < 240; i++) GD_Physics.step(st, false);
+    return st.x;
+  }
+  GD_ASSERT.near(run('ship'), run('cube'), 0.001, '同 1 秒水平位移');
+});
+
+GD_ASSERT.test('T4c 传送门切换模式', function () {
+  var C = GD_Physics.CONST;
+  // 门的触发框尺寸先钉死：GATE_H 决定"门有多高"，改了它不用别的测试就会红。
+  // GATE_H = 256 是**通高**（框从门的底边 o.y 往上延伸 256 格），见 physics.js 的注释。
+  GD_ASSERT.near(C.HIT.GATE_W, 1.4, 0.001, '门的触发框宽度');
+  GD_ASSERT.near(C.HIT.GATE_H, 256, 0.001, '门的触发框高度（通高）');
+
+  var st = GD_Physics.create({
+    // 两个门都贴地（y=0.5）：飞船落到地面后框是 [0,1]，而门框从 o.y 往上，
+    // y=1 的门框 [1, …] 与玩家框只在边界相接（overlap 用严格不等号）→ 永远不触发。
+    // 这正是 035e7be 在关卡里修掉的"门形同虚设"（见 level.js 与 L3 用例的注释）。
+    // 第二个门放在 x=60：原计划的 x=30 会在第一段循环（4 s ≈ x=41.5）里被越过，
+    // 于是"过第一个门应为 ship"必然看到 cube——门要放在第一段跑完之后才够得到。
+    objects: [{ x: 10, y: 0.5, t: 'portal_ship' }, { x: 60, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+  });
+  st.y = 1;
+  for (var i = 0; i < 240 * 4 && st.alive; i++) { GD_Physics.step(st, false); st.y = Math.max(st.y, 0); }
+  GD_ASSERT.ok(st.mode === 'ship', '过第一个门应为 ship，实为 ' + st.mode);
+  for (var j = 0; j < 240 * 3 && st.alive; j++) GD_Physics.step(st, false);
+  GD_ASSERT.ok(st.mode === 'cube', '过第二个门应回 cube，实为 ' + st.mode);
+
+  // 高空飞过回方块门也必须切成 cube：门的触发框要覆盖整条航道
+  var hi = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    // 段落的 mode 写 ship：这两个子场景里玩家是在**飞船**模式下飞过回方块门，
+    // 若写成 cube，玩家一旦死亡重开就会变成 cube，"高空飞过也应切成 cube"就假绿了。
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  hi.mode = 'ship'; hi.y = 9; hi.vy = 0;
+  for (var k = 0; k < 240 * 3 && hi.alive && hi.mode === 'ship'; k++) {
+    hi.y = 9; hi.vy = 0;            // 把飞船悬停在 y=9（远高于旧门框的 3.1），模拟"飞到高处再过门"
+    GD_Physics.step(hi, false);
+  }
+  GD_ASSERT.ok(hi.mode === 'cube',
+    '高空飞过回方块门也应切成 cube，实为 ' + hi.mode + '（y=' + hi.y.toFixed(2) + '）');
+
+  // 悬在半空的门不能被贴地玩家吃到：触发框的底边就是门的底边（o.y），
+  // 不能改成 0——那样"这一层高度的门"就变成"整根柱子都触发"，语义就错了。
+  var air = GD_Physics.create({
+    objects: [{ x: 10, y: 6, t: 'portal_ship' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+  });
+  for (var a = 0; a < 240 * 3 && air.alive; a++) GD_Physics.step(air, false);
+  GD_ASSERT.ok(air.mode === 'cube',
+    '悬在半空的门不该被贴地玩家触发，实为 ' + air.mode + '（x=' + air.x.toFixed(2) + '）');
+
+  // 速度门与传送门走同一条路径（不按门型特判）：高空飞过 speed_2x 门也必须变速。
+  // 只钉 GATE_H 常量不够——把 speed 分支单独改回 2.6 高的变异会全绿通过。
+  var spd = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'speed_2x' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  spd.mode = 'ship'; spd.y = 5; spd.vy = 0;
+  for (var sp = 0; sp < 240 * 3 && spd.alive; sp++) { spd.y = 5; spd.vy = 0; GD_Physics.step(spd, false); }
+  GD_ASSERT.ok(spd.speedKey === 2, '高空飞过 speed_2x 门也应变速到 2x，实为 ' + spd.speedKey);
+
+  // 切回方块的那一刻，"在地面 ⇒ vy==0"必须成立（handoff 缺陷清单第 1 条）
+  var g = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  g.mode = 'ship'; g.y = 0.2; g.vy = 16;    // 贴着地面、正要往上冲的飞船
+  for (var k2 = 0; k2 < 240 * 3 && g.alive; k2++) {
+    if (g.mode === 'ship') { g.y = 0.2; g.vy = 16; }   // 钉住这个状态直到进门
+    GD_Physics.step(g, false);
+    if (g.mode === 'cube') break;                       // 刚切回来的那一瞬间
+  }
+  GD_ASSERT.ok(g.mode === 'cube', '贴地过回方块门应切成 cube，实为 ' + g.mode);
+  // 这条是**护栏**：当前恒真（onGround 会被 collide() 尾部的落地判定改回 false），
+  // 拦不住真正的症状。留着是为了万一哪天真的"在地面却带着 vy"，标签能一眼看出
+  // 这是有意保留的检查，而不是忘了删的废断言。
+  GD_ASSERT.ok(!(g.onGround && g.vy !== 0),
+    '切回方块后若在地面，vy 必须为 0（当前恒真，见上方注释：onGround 会被 collide() 尾部改回 false）实为 vy=' + g.vy + ' onGround=' + g.onGround);
+  // 上面那条恒真，拦不住真正的症状——飞船残余的 vy 被带进方块模式，
+  // 方块会再往上飞一截。改成直接钉住 vy：
+  GD_ASSERT.near(g.vy, 0, 1e-9, '切回方块那一刻 vy 必须归零（修复前实测 15.77）');
+  // 行为层面：切回方块后不该继续上升（修复前从 y=0.266 被顶到 1.3475，修复后落回地面）
+  var ySwitch = g.y, peak = g.y;
+  for (var m = 0; m < 240; m++) {
+    GD_Physics.step(g, false);
+    if (g.y > peak) peak = g.y;
+  }
+  GD_ASSERT.ok(peak <= ySwitch + 1e-9,
+    '切回方块后不应被飞船残余速度顶上天，实测峰值 ' + peak.toFixed(4) +
+    '（切回时 y=' + ySwitch.toFixed(4) + '）');
+
+  // 空中切回方块必须**保留**上升速度：把 vy 无条件清零（连空中也清）会让
+  // ship→cube 的转换变成"凭空掉下来"。这里只钉"不被清成 0"，不钉具体数值——
+  // 手感数值留给 Task 13 校准，本条只钉"地面清 / 空中不清"这个分支区别。
+  var air2 = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  air2.mode = 'ship'; air2.y = 5; air2.vy = 16;
+  for (var n2 = 0; n2 < 240 * 3 && air2.alive; n2++) {
+    if (air2.mode === 'ship') { air2.y = 5; air2.vy = 16; }
+    GD_Physics.step(air2, false);
+    if (air2.mode === 'cube') break;
+  }
+  GD_ASSERT.ok(air2.mode === 'cube', '高空过回方块门应切成 cube，实为 ' + air2.mode);
+  GD_ASSERT.ok(air2.vy > 0, '空中切回方块应保留上升速度（vy>0），实为 vy=' + air2.vy);
+
+  // 门框必须盖得住"飞船段内能爬到的高度"：玩家从切船门起一直按住，
+  // 理论上能爬到 (252.5−111.5)/10.386 × 16 ≈ 217 格（按最慢的 1x 算），
+  // GATE_H = 256 盖得住。关卡只放两扇门（飞船段的柱阵会把玩家撞死，
+  // 这里要的是"纯爬升上界"），门的 x 从真实关卡里读——关卡长度改了，这个界会跟着动。
+  var lvGates = GD_Level.crossbeat.objects.filter(function (o) {
+    return o.t === 'portal_ship' || o.t === 'portal_cube';
+  });
+  var shipGate = lvGates.filter(function (o) { return o.t === 'portal_ship'; })[0];
+  var cubeGate = lvGates.filter(function (o) { return o.t === 'portal_cube'; })[0];
+  var climb = GD_Physics.create({
+    objects: [{ x: shipGate.x, y: shipGate.y, t: 'portal_ship' },
+              { x: cubeGate.x, y: cubeGate.y, t: 'portal_cube' }],
+    meta: { endBlock: 1e9 },
+    segments: [{ from: 0, to: 1e9, mode: 'ship', speed: 1 }]
+  });
+  climb.mode = 'ship'; climb.speedKey = 1;      // 按最慢的 1x 算 = 爬升时间的上界
+  climb.x = shipGate.x - 0.5; climb.y = 0; climb.vy = 0; climb.onGround = false;
+  var maxY = 0;
+  for (var cl = 0; cl < 240 * 40 && climb.alive && climb.x < cubeGate.x - 0.5; cl++) {
+    GD_Physics.step(climb, true);               // 一直按住
+    if (climb.y > maxY) maxY = climb.y;
+  }
+  GD_ASSERT.ok(maxY < C.HIT.GATE_H,
+    '按住不放时飞船段内爬到的高度必须仍在门框内，实测 ' + maxY.toFixed(2) +
+    '（门框上沿 ' + (cubeGate.y + C.HIT.GATE_H).toFixed(1) + '）');
 });

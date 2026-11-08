@@ -358,7 +358,19 @@ window.GD_Physics = (function () {
       PAD_H: 0.35,                          // 跳板顶面厚度
       RING_X0: -0.6, RING_X1: 1.6,          // 跳环触发框相对环心的横向范围
       RING_Y0: -0.6, RING_Y1: 1.6,          // 跳环触发框相对环心的纵向范围
-      GATE_W: 1.4, GATE_H: 2.6              // 传送门/速度门触发框
+      // 传送门/速度门的触发框从门的底边（o.y）往上延伸 **GATE_H** 格——通高，不按门型特判。
+      // 高度是**自调参项**（原版是否通高没有可核实的依据，见 spec §13），按可推导的上界取值：
+      // 飞船爬升被 CONST.SHIP.CAP_UP 钳在 16 格/s；玩家在切船门 x=111.5 时还贴着地面（y≈0），
+      // 到回方块门 x=252.5 最多有 (252.5−111.5)/10.386 = 13.6 s（按最慢的 1x 算）
+      // → 最多爬 217 格。256 盖得住（余量约 39 格）；24 盖不住——
+      // 实测从 x=111.5 起按住不放，x=252.4 时 y=177.83，两扇门（框 [0.5,24.5]）都够不着，
+      // 玩家以飞船 2x 直接飞过整个收尾段通关。
+      // 注意这仍然只是**上界**：关卡的飞船段没有封顶，玩家理论上还能飞到 y≥256.5 错过门，
+      // 那个洞记在 spec §13（要靠关卡封顶解决，不是靠门框）。
+      // 框的底边仍是门的 y：地面上的玩家（框 [0,1]）能吃到 y=0.5 的门
+      // （框 [0.5,256.5]，1 > 0.5 成立）；不要把底边也改成 0——
+      // 那会让悬在半空的门被地面上的玩家触发，语义就错了。
+      GATE_W: 1.4, GATE_H: 256
     }
   };
 
@@ -550,7 +562,16 @@ window.GD_Physics = (function () {
       } else if (o.t === 'portal_ship' || o.t === 'portal_cube') {
         if (overlap(pb, { x0: o.x, x1: o.x + CONST.HIT.GATE_W, y0: o.y, y1: o.y + CONST.HIT.GATE_H })) {
           st.mode = o.t === 'portal_ship' ? 'ship' : 'cube';
-          if (st.mode === 'cube') { st.onGround = st.y <= GROUND + CONST.LAND_TOL; st.rot = Math.round(st.rot / 90) * 90; }
+          if (st.mode === 'cube') {
+            st.onGround = st.y <= GROUND + CONST.LAND_TOL;
+            // 判为站在地面上时必须同时清零 vy："在地面 ⇒ vy == 0"是不变式，
+            // 飞船残余的 vy 带进方块模式会让方块多飞一下（handoff 缺陷清单第 1 条）。
+            // 在地面之外（onGround 为假）**保留** vy：切换只换操作方式，不该凭空吃掉
+            // 玩家上升的动量（动量连续性）。空中保留并不消除"多飞一下"——
+            // 那是方块模式本来就有的跳跃弧线，留 Task 13 手感校准。
+            if (st.onGround) st.vy = 0;
+            st.rot = Math.round(st.rot / 90) * 90;
+          }
         }
       } else if (o.t === 'speed_2x' || o.t === 'speed_1x' || o.t === 'speed_3x' || o.t === 'speed_4x') {
         if (overlap(pb, { x0: o.x, x1: o.x + CONST.HIT.GATE_W, y0: o.y, y1: o.y + CONST.HIT.GATE_H })) {
@@ -909,10 +930,11 @@ GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍�
     }
   }
   // 回方块的门与降速门必须真的能触发。
-  // 玩家贴地时框是 [0,1]；门放在 y=1.0 时触发框是 [1,3.6]，两者只在 y=1 处相接，
+  // 玩家贴地时框是 [0,1]；门放在 y=1.0 时触发框是 [1, 1+GATE_H]，两者只在 y=1 处相接，
   // 而 overlap 用的是严格不等号 → 永远不重叠 → 门形同虚设：
   // 实测贴地跑过 x=253 仍是飞船模式，随后撞死在 x=264 的第一根尖刺。
-  // 门贴地（y=0.5）后触发窗口是 y∈(-0.5, 3.1)，松手落地的玩家必然命中。
+  // 门贴地（y=0.5）后触发窗口是 y∈(-0.5, 0.5+GATE_H)，GATE_H=256 时是 (-0.5, 256.5)，
+  // 松手落地的玩家必然命中。
   var g2 = GD_Physics.create(lv);
   g2.mode = 'ship'; g2.speedKey = 2; g2.x = 250; g2.y = 0; g2.vy = 0; g2.onGround = false;
   for (var s2 = 0; s2 < 240 * 3 && g2.x < 258; s2++) GD_Physics.step(g2, false);
@@ -931,7 +953,6 @@ GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍�
 
 `level.js`——段落与 spec §7 一一对应。对象坐标按"一次跳 = 4.02 格"的时间网格摆放，间距取拍数（154 BPM，一拍 0.3896 s，@1x 一拍走 4.046 格）：
 
-```js
 window.GD_Level = (function () {
   var BPM = 154;
 
@@ -993,12 +1014,14 @@ window.GD_Level = (function () {
     // 回方块：切船门在 x=112、降速门在 x=116，两扇门都贴地（y=0.5）。
     // 触发点是玩家前沿（x+0.5）碰到门的 x，所以实际切换发生在 x≈111.5 / 115.5，
     // 段落的 118 / 254 只是主题分段点——两者不是一回事，别再写成"严格相等"。
-    // 回方块这扇门同样必须贴地：触发框是 [y, y+2.6]，玩家贴地时框是 [0,1]，
+    // 回方块这扇门同样必须贴地：触发框从 o.y 往上延伸，玩家贴地时框是 [0,1]，
     // 门放在 y=1.0 时 1 > 1 不成立，门永远不触发——实测贴地跑过 x=253 仍是飞船模式，
-    // 随后撞死在 x=264 的第一根尖刺。y=0.5 的触发窗口是 y∈(-0.5, 3.1)，
-    // 松手落地的玩家必然命中。
-    // 残留缺口：玩家若在出口一直按住（y>3.1）仍会错过这扇门。Task 7 把
-    // portal_cube 的触发框扩到覆盖整条航道时一并关掉。
+    // 随后撞死在 x=264 的第一根尖刺。
+    // Task 7 把触发框改成了**通高**（GATE_H = 256 格，框是 [0.5, 256.5]）：
+    // 通道内的玩家（y≲11）和出口前一小段内起飞的人都能命中。
+    // 但这**不是**"飞到多高都不会错过"——飞船段没有封顶，玩家理论上能飞到 y≥256.5
+    // 仍会错过这扇门（那个洞记在 spec §13，要靠关卡封顶解决，不是靠门框）。
+    // 门的底边仍是 0.5——不能改成 0，否则悬在半空的门会被地面上的玩家触发，语义就错了。
     { x: 253, y: 0.5, t: 'portal_cube' },
     { x: 254, y: 0.5, t: 'speed_1x' },
 
@@ -1078,6 +1101,7 @@ window.GD_Level = (function () {
 
   return { crossbeat: crossbeat, validate: validate, VALID_TYPES: VALID_TYPES };
 })();
+})();
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -1102,9 +1126,154 @@ window.GD_Level = (function () {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/My Games/drgame" && git add level.js tests && git commit -m "feat: Crossbeat 关卡数据与校验
+window.GD_Level = (function () {
+  var BPM = 154;
 
-障碍按 154 BPM 的时间网格摆放，一次跳跃 = 一拍。"
+  function spikeRun(startX, count, y) {
+    var a = [];
+    for (var i = 0; i < count; i++) a.push({ x: startX + i, y: y || 0, t: 'spike' });
+    return a;
+  }
+  // cube 段的柱子限高 2 格：单跳顶点 2.17，3 格柱实测 65 个起跳阈值 0 个能通过。
+  // 长按能蹭过去不算合法路线——那是 LAND_TOL 把人吸上墙肩后再起跳的副作用。
+  function pillar(x, h) {
+    var a = [];
+    for (var i = 0; i < h; i++) a.push({ x: x, y: i, t: 'block' });
+    return a;
+  }
+
+  var objects = [].concat(
+    // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍（1 拍 = 4.046 格，8 格 = 1.98 拍）
+    spikeRun(14, 1),
+    spikeRun(22, 1),
+    spikeRun(30, 2),
+
+    // 推进 40–110：柱阵 + 环 + 跳板
+    pillar(42, 2),
+    spikeRun(48, 1),
+    { x: 52, y: 2.0, t: 'ring_pink' },
+    pillar(58, 2),
+    spikeRun(64, 2),
+    { x: 70, y: 0, t: 'pad_pink' },
+    spikeRun(74, 1, 0), spikeRun(75, 1, 0),
+    pillar(82, 2),
+    { x: 88, y: 2.4, t: 'ring_yellow' },
+    spikeRun(94, 2),
+    pillar(100, 2),
+    spikeRun(106, 1),
+
+    // 切船 110–118：门都贴着地面（y=0.5），与地面线齐平
+    { x: 112, y: 0.5, t: 'portal_ship' },
+    { x: 116, y: 0.5, t: 'speed_2x' },
+
+    // 飞行 118–254：上下柱阵通道。@2x 一拍走 12.914*0.3896 = 5.03 格
+    // 通道净空 4 格，玩家 1 格，容错 3 格
+    pillar(126, 4), { x: 126, y: 8, t: 'block' }, { x: 126, y: 9, t: 'block' }, { x: 126, y: 10, t: 'block' },
+    { x: 134, y: 0, t: 'block' }, { x: 134, y: 1, t: 'block' }, { x: 134, y: 7, t: 'block' }, { x: 134, y: 8, t: 'block' },
+    pillar(142, 5), { x: 142, y: 9, t: 'block' }, { x: 142, y: 10, t: 'block' },
+    { x: 150, y: 0, t: 'block' }, { x: 150, y: 1, t: 'block' }, { x: 150, y: 2, t: 'block' }, { x: 150, y: 8, t: 'block' },
+    pillar(158, 3), { x: 158, y: 9, t: 'block' },
+    { x: 166, y: 0, t: 'block' }, { x: 166, y: 1, t: 'block' }, { x: 166, y: 7, t: 'block' }, { x: 166, y: 8, t: 'block' },
+    pillar(174, 6), { x: 174, y: 10, t: 'block' },
+    { x: 182, y: 0, t: 'block' }, { x: 182, y: 6, t: 'block' }, { x: 182, y: 7, t: 'block' },
+    pillar(190, 4), { x: 190, y: 9, t: 'block' }, { x: 190, y: 10, t: 'block' },
+    { x: 198, y: 0, t: 'block' }, { x: 198, y: 1, t: 'block' }, { x: 198, y: 8, t: 'block' },
+    pillar(206, 5), { x: 206, y: 10, t: 'block' },
+    { x: 214, y: 0, t: 'block' }, { x: 214, y: 1, t: 'block' }, { x: 214, y: 2, t: 'block' }, { x: 214, y: 7, t: 'block' },
+    pillar(222, 3), { x: 222, y: 8, t: 'block' }, { x: 222, y: 9, t: 'block' },
+    { x: 230, y: 0, t: 'block' }, { x: 230, y: 1, t: 'block' }, { x: 230, y: 9, t: 'block' },
+    pillar(238, 4), { x: 238, y: 10, t: 'block' },
+
+    // 回方块：切船门在 x=112、降速门在 x=116，两扇门都贴地（y=0.5）。
+    // 触发点是玩家前沿（x+0.5）碰到门的 x，所以实际切换发生在 x≈111.5 / 115.5，
+    // 段落的 118 / 254 只是主题分段点——两者不是一回事，别再写成"严格相等"。
+    // 回方块这扇门同样必须贴地：触发框从 o.y 往上延伸，玩家贴地时框是 [0,1]，
+    // 门放在 y=1.0 时 1 > 1 不成立，门永远不触发——实测贴地跑过 x=253 仍是飞船模式，
+    // 随后撞死在 x=264 的第一根尖刺。
+    // Task 7 把触发框改成了**通高**（GATE_H = 256 格，框是 [0.5, 256.5]）：
+    // 通道内的玩家（y≲11）和出口前一小段内起飞的人都能命中。
+    // 但这**不是**"飞到多高都不会错过"——飞船段没有封顶，玩家理论上能飞到 y≥256.5
+    // 仍会错过这扇门（那个洞记在 spec §13，要靠关卡封顶解决，不是靠门框）。
+    // 门的底边仍是 0.5——不能改成 0，否则悬在半空的门会被地面上的玩家触发，语义就错了。
+    { x: 253, y: 0.5, t: 'portal_cube' },
+    { x: 254, y: 0.5, t: 'speed_1x' },
+
+    // 收尾 258–360：密集节奏段
+    spikeRun(264, 1),
+    spikeRun(272, 2),
+    pillar(280, 2),
+    spikeRun(286, 1), { x: 288, y: 2.0, t: 'ring_pink' },
+    spikeRun(294, 2),
+    { x: 300, y: 0, t: 'pad_pink' },
+    spikeRun(304, 1), spikeRun(305, 1),
+    pillar(312, 2),
+    spikeRun(318, 2),
+    pillar(324, 2),
+    spikeRun(330, 1),
+    { x: 334, y: 2.4, t: 'ring_yellow' },
+    spikeRun(340, 2),   // 三连刺打不过：y>=0.55 的窗口只有 3.49 格，三刺要 3.55
+    { x: 360, y: 0, t: 'finish' }   // 旗子与 endBlock 同点：越过 x=360 的瞬间判通关
+  );
+
+  var crossbeat = {
+    meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360 },
+    segments: [
+      { from: 0,   to: 110, mode: 'cube', speed: 1, theme: 'blue'   },   // 10.591 s
+      { from: 110, to: 118, mode: 'cube', speed: 1, theme: 'blue'   },   //  0.770 s  切船过渡
+      { from: 118, to: 254, mode: 'ship', speed: 2, theme: 'violet' },   // 10.531 s
+      { from: 254, to: 360, mode: 'cube', speed: 1, theme: 'blue'   }    // 10.206 s
+    ],
+    // 合计 32.098 s，落在 L2 测试的 32.0 ± 2% 容差内
+    objects: objects
+  };
+
+  var VALID_TYPES = ['spike', 'block', 'pad_pink', 'pad_yellow', 'ring_pink', 'ring_yellow',
+                     'portal_ship', 'portal_cube', 'speed_1x', 'speed_2x', 'speed_3x', 'speed_4x', 'finish'];
+  // 合法门速。写在这里而不是从 physics 读：level.js 是纯数据层，不能反向依赖物理层。
+  var VALID_SPEEDS = [0.5, 1, 2, 3, 4];
+
+  function validate(lv) {
+    var errs = [];
+    if (!lv.meta) errs.push('缺 meta');
+    if (!Array.isArray(lv.objects)) errs.push('缺 objects 数组');
+    if (!Array.isArray(lv.segments)) errs.push('缺 segments 数组');
+    if (lv.meta && typeof lv.meta.endBlock !== 'number') errs.push('meta.endBlock 非数字');
+    if (lv.objects) {
+      for (var i = 0; i < lv.objects.length; i++) {
+        var o = lv.objects[i];
+        if (typeof o.x !== 'number' || typeof o.y !== 'number') errs.push('对象缺 x/y: #' + i);
+        if (VALID_TYPES.indexOf(o.t) < 0) errs.push('未知类型: ' + o.t + ' #' + i);
+        // 对象不能落在终点之后：那样它永远不会被玩家碰到，等于白放一个障碍
+        if (lv.meta && typeof lv.meta.endBlock === 'number' && o.x > lv.meta.endBlock) {
+          errs.push('对象越过终点: ' + o.t + '@' + o.x);
+        }
+      }
+    }
+    if (lv.segments) {
+      for (var s = 0; s < lv.segments.length; s++) {
+        var sg = lv.segments[s];
+        if (['cube', 'ship'].indexOf(sg.mode) < 0) errs.push('非法 mode: ' + sg.mode);
+        if (typeof sg.from !== 'number' || typeof sg.to !== 'number') errs.push('段落缺 from/to #' + s);
+        else {
+          if (sg.to <= sg.from) errs.push('段落 from>=to #' + s + ' (' + sg.from + '→' + sg.to + ')');
+          if (VALID_SPEEDS.indexOf(sg.speed) < 0) errs.push('非法 speed: ' + sg.speed + ' #' + s);
+        }
+      }
+      // 段落必须首尾相接且从 0 开始：Task 12 的 tOf() 按段落做分段积分，
+      // 段落之间留缝会让"到达 x 的时刻"整体算偏。
+      if (lv.segments.length && lv.segments[0].from !== 0) errs.push('第一个段落必须从 0 开始');
+      for (var k = 1; k < lv.segments.length; k++) {
+        if (lv.segments[k].from !== lv.segments[k - 1].to) {
+          errs.push('段落不连续: #' + (k - 1) + ' 结束于 ' + lv.segments[k - 1].to +
+                    '，#' + k + ' 从 ' + lv.segments[k].from + ' 开始');
+        }
+      }
+    }
+    return errs;
+  }
+
+  return { crossbeat: crossbeat, validate: validate, VALID_TYPES: VALID_TYPES };
+})();
 ```
 
 ---
@@ -1354,18 +1523,32 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git 
 ## Task 7: 飞船模式（T4）
 
 **Files:**
+- Modify: `physics.js`（门的触发框通高 + 切回方块时清 `vy`）
+- Modify: `level.js`（只改注释：把"残留缺口"那句改成现状）
 - Modify: `tests/physics.test.js`（追加）
 - Modify: `tests/harness.html`（`expect_tests` 改成 16）
 
 - [ ] **Step 1: 写测试**
 
-追加 T4/T4b/T4c 三条到 `tests/physics.test.js`，并把 `expect_tests` 改为 16：
+追加 T4/T4b/T4c 三条到 `tests/physics.test.js`，并把 `expect_tests` 改为 16。
+下面的代码块是**磁盘上的最终形态**（Step 5 的断言已经并进 `T4c`）：
 
 ```js
 GD_ASSERT.test('T4 飞船速度上限钳制', function () {
   function shipVy(held, seconds) {
-    var st = GD_Physics.create({ objects: [], meta: { endBlock: 100000 } });
-    st.mode = 'ship'; st.y = 5;
+    // 关卡必须带非空 segments：Task 2 拆掉了 respawn 的静默回退，
+    // 缺 segments 时死亡重开会抛 TypeError，而不是悄悄退回 cube/1x。
+    // 本用例测的是飞船模式，所以段落的 mode 写 ship、speed 与 create() 的初值一致。
+    var st = GD_Physics.create({
+      segments: [{ from: 0, to: 100000, mode: 'ship', speed: 1 }],
+      objects: [],
+      meta: { endBlock: 100000 }
+    });
+    st.mode = 'ship'; st.y = 50;
+    // 起点必须高于 2 秒的下坠距离：飞船碰到地面会被钳成 y=0、vy=0
+    // （stepShip 的 `if (st.y < GROUND)`），落在地上的飞船根本测不出 -19.2 的下限钳位
+    // （实测从 y=5 起松手 2 秒，vy=0）。实测 2 秒最多下坠 35.25 格（y=50 → 14.749），
+    // 50 格留足余量。
     for (var i = 0; i < 240 * seconds; i++) GD_Physics.step(st, held);
     return st.vy;
   }
@@ -1375,7 +1558,13 @@ GD_ASSERT.test('T4 飞船速度上限钳制', function () {
 
 GD_ASSERT.test('T4b 飞船水平速度与方块模式完全相同', function () {
   function run(mode) {
-    var st = GD_Physics.create({ objects: [], meta: { endBlock: 100000 } });
+    // segments 只在死亡重开时才起作用，本用例不会死；固定写 ship/speed 2 是为了
+    // 不给 run('cube') 那一路引入第二个变量（两路的差别只应该是 mode）。
+    var st = GD_Physics.create({
+      segments: [{ from: 0, to: 100000, mode: 'ship', speed: 2 }],
+      objects: [],
+      meta: { endBlock: 100000 }
+    });
     st.mode = mode; st.speedKey = 2;
     for (var i = 0; i < 240; i++) GD_Physics.step(st, false);
     return st.x;
@@ -1384,8 +1573,19 @@ GD_ASSERT.test('T4b 飞船水平速度与方块模式完全相同', function () 
 });
 
 GD_ASSERT.test('T4c 传送门切换模式', function () {
+  var C = GD_Physics.CONST;
+  // 门的触发框尺寸先钉死：GATE_H 决定"门有多高"，改了它不用别的测试就会红。
+  // GATE_H = 256 是**通高**（框从门的底边 o.y 往上延伸 256 格），见 physics.js 的注释。
+  GD_ASSERT.near(C.HIT.GATE_W, 1.4, 0.001, '门的触发框宽度');
+  GD_ASSERT.near(C.HIT.GATE_H, 256, 0.001, '门的触发框高度（通高）');
+
   var st = GD_Physics.create({
-    objects: [{ x: 10, y: 0.5, t: 'portal_ship' }, { x: 30, y: 1, t: 'portal_cube' }],
+    // 两个门都贴地（y=0.5）：飞船落到地面后框是 [0,1]，而门框从 o.y 往上，
+    // y=1 的门框 [1, …] 与玩家框只在边界相接（overlap 用严格不等号）→ 永远不触发。
+    // 这正是 035e7be 在关卡里修掉的"门形同虚设"（见 level.js 与 L3 用例的注释）。
+    // 第二个门放在 x=60：原计划的 x=30 会在第一段循环（4 s ≈ x=41.5）里被越过，
+    // 于是"过第一个门应为 ship"必然看到 cube——门要放在第一段跑完之后才够得到。
+    objects: [{ x: 10, y: 0.5, t: 'portal_ship' }, { x: 60, y: 0.5, t: 'portal_cube' }],
     meta: { endBlock: 100000 },
     segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
   });
@@ -1394,26 +1594,148 @@ GD_ASSERT.test('T4c 传送门切换模式', function () {
   GD_ASSERT.ok(st.mode === 'ship', '过第一个门应为 ship，实为 ' + st.mode);
   for (var j = 0; j < 240 * 3 && st.alive; j++) GD_Physics.step(st, false);
   GD_ASSERT.ok(st.mode === 'cube', '过第二个门应回 cube，实为 ' + st.mode);
+
+  // 高空飞过回方块门也必须切成 cube：门的触发框要覆盖整条航道
+  var hi = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    // 段落的 mode 写 ship：这两个子场景里玩家是在**飞船**模式下飞过回方块门，
+    // 若写成 cube，玩家一旦死亡重开就会变成 cube，"高空飞过也应切成 cube"就假绿了。
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  hi.mode = 'ship'; hi.y = 9; hi.vy = 0;
+  for (var k = 0; k < 240 * 3 && hi.alive && hi.mode === 'ship'; k++) {
+    hi.y = 9; hi.vy = 0;            // 把飞船悬停在 y=9（远高于旧门框的 3.1），模拟"飞到高处再过门"
+    GD_Physics.step(hi, false);
+  }
+  GD_ASSERT.ok(hi.mode === 'cube',
+    '高空飞过回方块门也应切成 cube，实为 ' + hi.mode + '（y=' + hi.y.toFixed(2) + '）');
+
+  // 悬在半空的门不能被贴地玩家吃到：触发框的底边就是门的底边（o.y），
+  // 不能改成 0——那样"这一层高度的门"就变成"整根柱子都触发"，语义就错了。
+  var air = GD_Physics.create({
+    objects: [{ x: 10, y: 6, t: 'portal_ship' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+  });
+  for (var a = 0; a < 240 * 3 && air.alive; a++) GD_Physics.step(air, false);
+  GD_ASSERT.ok(air.mode === 'cube',
+    '悬在半空的门不该被贴地玩家触发，实为 ' + air.mode + '（x=' + air.x.toFixed(2) + '）');
+
+  // 速度门与传送门走同一条路径（不按门型特判）：高空飞过 speed_2x 门也必须变速。
+  // 只钉 GATE_H 常量不够——把 speed 分支单独改回 2.6 高的变异会全绿通过。
+  var spd = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'speed_2x' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  spd.mode = 'ship'; spd.y = 5; spd.vy = 0;
+  for (var sp = 0; sp < 240 * 3 && spd.alive; sp++) { spd.y = 5; spd.vy = 0; GD_Physics.step(spd, false); }
+  GD_ASSERT.ok(spd.speedKey === 2, '高空飞过 speed_2x 门也应变速到 2x，实为 ' + spd.speedKey);
+
+  // 切回方块的那一刻，"在地面 ⇒ vy==0"必须成立（handoff 缺陷清单第 1 条）
+  var g = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  g.mode = 'ship'; g.y = 0.2; g.vy = 16;    // 贴着地面、正要往上冲的飞船
+  for (var k2 = 0; k2 < 240 * 3 && g.alive; k2++) {
+    if (g.mode === 'ship') { g.y = 0.2; g.vy = 16; }   // 钉住这个状态直到进门
+    GD_Physics.step(g, false);
+    if (g.mode === 'cube') break;                       // 刚切回来的那一瞬间
+  }
+  GD_ASSERT.ok(g.mode === 'cube', '贴地过回方块门应切成 cube，实为 ' + g.mode);
+  // 这条是**护栏**：当前恒真（onGround 会被 collide() 尾部的落地判定改回 false），
+  // 拦不住真正的症状。留着是为了万一哪天真的"在地面却带着 vy"，标签能一眼看出
+  // 这是有意保留的检查，而不是忘了删的废断言。
+  GD_ASSERT.ok(!(g.onGround && g.vy !== 0),
+    '切回方块后若在地面，vy 必须为 0（当前恒真，见上方注释：onGround 会被 collide() 尾部改回 false）实为 vy=' + g.vy + ' onGround=' + g.onGround);
+  // 上面那条恒真，拦不住真正的症状——飞船残余的 vy 被带进方块模式，
+  // 方块会再往上飞一截。改成直接钉住 vy：
+  GD_ASSERT.near(g.vy, 0, 1e-9, '切回方块那一刻 vy 必须归零（修复前实测 15.77）');
+  // 行为层面：切回方块后不该继续上升（修复前从 y=0.266 被顶到 1.3475，修复后落回地面）
+  var ySwitch = g.y, peak = g.y;
+  for (var m = 0; m < 240; m++) {
+    GD_Physics.step(g, false);
+    if (g.y > peak) peak = g.y;
+  }
+  GD_ASSERT.ok(peak <= ySwitch + 1e-9,
+    '切回方块后不应被飞船残余速度顶上天，实测峰值 ' + peak.toFixed(4) +
+    '（切回时 y=' + ySwitch.toFixed(4) + '）');
+
+  // 空中切回方块必须**保留**上升速度：把 vy 无条件清零（连空中也清）会让
+  // ship→cube 的转换变成"凭空掉下来"。这里只钉"不被清成 0"，不钉具体数值——
+  // 手感数值留给 Task 13 校准，本条只钉"地面清 / 空中不清"这个分支区别。
+  var air2 = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  air2.mode = 'ship'; air2.y = 5; air2.vy = 16;
+  for (var n2 = 0; n2 < 240 * 3 && air2.alive; n2++) {
+    if (air2.mode === 'ship') { air2.y = 5; air2.vy = 16; }
+    GD_Physics.step(air2, false);
+    if (air2.mode === 'cube') break;
+  }
+  GD_ASSERT.ok(air2.mode === 'cube', '高空过回方块门应切成 cube，实为 ' + air2.mode);
+  GD_ASSERT.ok(air2.vy > 0, '空中切回方块应保留上升速度（vy>0），实为 vy=' + air2.vy);
+
+  // 门框必须盖得住"飞船段内能爬到的高度"：玩家从切船门起一直按住，
+  // 理论上能爬到 (252.5−111.5)/10.386 × 16 ≈ 217 格（按最慢的 1x 算），
+  // GATE_H = 256 盖得住。关卡只放两扇门（飞船段的柱阵会把玩家撞死，
+  // 这里要的是"纯爬升上界"），门的 x 从真实关卡里读——关卡长度改了，这个界会跟着动。
+  var lvGates = GD_Level.crossbeat.objects.filter(function (o) {
+    return o.t === 'portal_ship' || o.t === 'portal_cube';
+  });
+  var shipGate = lvGates.filter(function (o) { return o.t === 'portal_ship'; })[0];
+  var cubeGate = lvGates.filter(function (o) { return o.t === 'portal_cube'; })[0];
+  var climb = GD_Physics.create({
+    objects: [{ x: shipGate.x, y: shipGate.y, t: 'portal_ship' },
+              { x: cubeGate.x, y: cubeGate.y, t: 'portal_cube' }],
+    meta: { endBlock: 1e9 },
+    segments: [{ from: 0, to: 1e9, mode: 'ship', speed: 1 }]
+  });
+  climb.mode = 'ship'; climb.speedKey = 1;      // 按最慢的 1x 算 = 爬升时间的上界
+  climb.x = shipGate.x - 0.5; climb.y = 0; climb.vy = 0; climb.onGround = false;
+  var maxY = 0;
+  for (var cl = 0; cl < 240 * 40 && climb.alive && climb.x < cubeGate.x - 0.5; cl++) {
+    GD_Physics.step(climb, true);               // 一直按住
+    if (climb.y > maxY) maxY = climb.y;
+  }
+  GD_ASSERT.ok(maxY < C.HIT.GATE_H,
+    '按住不放时飞船段内爬到的高度必须仍在门框内，实测 ' + maxY.toFixed(2) +
+    '（门框上沿 ' + (cubeGate.y + C.HIT.GATE_H).toFixed(1) + '）');
 });
 ```
 
+计划初稿有三处与实测对不上，已按实测改（理由都写在代码注释里）：
+
+1. **T4 的起点是 `st.y = 50` 而不是 5**：飞船碰到地面会被钳成 `y=0, vy=0`
+   （`stepShip` 的 `if (st.y < GROUND)`），落在地上的飞船根本测不出 −19.2 的下限钳位——
+   实测从 y=5 松手 2 秒，`vy = 0`。2 秒最多下坠 35.25 格（y=50 → 14.749），50 格留足余量。
+2. **T4c 的第二个门从 x=30 挪到 x=60**：第一段循环跑 4 秒（1x ≈ x=41.5），
+   x=30 的门在第一段里就被越过了，"过第一个门应为 ship"必然看到 cube。
+3. **T4c 的两个门都贴地（y=0.5，第二个门原来写的是 y=1）**：飞船落到地面后框是 `[0,1]`，
+   而门框从 `o.y` 往上，y=1 的门框 `[1, …]` 与玩家框只在边界相接（`overlap` 用严格不等号）→ 永远不触发。
+   这正是 035e7be 在关卡里修掉的"门形同虚设"。
+
 - [ ] **Step 2: 跑测试**
 
-预期：`T4` 通过（Task 2 已实现 `stepShip`）。`T4c` 若报 `Cannot read properties of undefined (reading '0')`，**不要给 `respawn()` 加回退默认值**——那是 Task 2 自查记录第 11 条刚刚拆掉的静默坑（`segments` 缺失或拼错时悄悄退回 cube/1x，任何测试都不会红）。正确做法是让**测试自己传的关卡**带上非空 `segments`：
+预期：`T4` 通过（Task 2 已实现 `stepShip`），`pass: 16, fail: 0, registered: 16, runErrors: []`。
+`loadErrors` 只剩 `replay.js` / `replay.test.js` 两条 404（Task 12 之前属预期）。
 
-```js
-GD_Physics.create({
-  segments: [{ from: 0, to: 1e9, mode: 'ship', speed: 2 }],
-  objects: [ ... ],
-  meta: { endBlock: 1e9 }
-})
-```
+**`T4c` 若报 `Cannot read properties of undefined (reading '0')`，不要给 `respawn()` 加回退默认值**——
+那是 Task 2 自查记录第 11 条刚刚拆掉的静默坑（`segments` 缺失或拼错时悄悄退回 cube/1x，任何测试都不会红）。
+正确做法是让**测试自己传的关卡**带上非空 `segments`（Step 3 已经补上）。
 
 关卡合法性由 Task 5 的 `GD_Level.validate()` 在装载时把关（spec §11.4：校验只放在真实边界上），物理层内部不做防御。
 
 - [ ] **Step 3: 补测试关卡的 segments**
 
-把 T4 / T4b / T4c 里所有 `GD_Physics.create({ objects: ..., meta: ... })` 都补上 `segments`，字段值与本条用例要测的模式一致。跑测试直到 `pass: 16`。
+把 T4 / T4b / T4c 里所有 `GD_Physics.create({ objects: ..., meta: ... })` 都补上 `segments`，字段值与该用例要测的模式一致
+（`T4c` 里两个飞在门上的子场景用 `mode: 'ship'`：写成 `cube` 的话，玩家一旦死亡重开就会变成 cube，
+"高空飞过回方块门也应切成 cube"就假绿了）。跑测试直到 `pass: 16`。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -1423,31 +1745,87 @@ GD_Physics.create({
 
 这两个都属于"传送门切换"，放在本任务做，不要拖到 Task 13：
 
-1. **`portal_cube` 的触发框必须覆盖整条航道。** 现在的触发框是 `1.4 × 2.6` 格（`CONST.HIT.GATE_W/GATE_H`），而飞船段出口的净空带是 **y∈[4,9]**（15 列通道逐列算出来的）。玩家若在出口一直按住（y>3.1）就会**错过回方块门**：实测他仍以飞船模式撞死在 x=264 的第一根尖刺，或者干脆以 2x 飞过整个收尾段直接通关——后者等于把这一关最花心思的收尾白送。原版里关卡段落末尾的传送门是**通高**的，我们把 `portal_cube` 的触发框改成覆盖 y∈[0,12]，并让 `render.js` 把它画成一根通高的门柱。
-2. **`portal_cube` 置 `onGround = true` 时必须清 `vy`。** 现在 `st.onGround = st.y <= GROUND + CONST.LAND_TOL;` 之后没清 `vy`，破坏了"在地面 ⇒ `vy == 0`"这条不变式——而自查记录第 15 条的台沿自由落体分支正依赖它：飞船残余的 `vy` 带进方块模式会多飞一下（handoff 缺陷清单第 1 条）。
+1. **传送门/速度门的触发框必须通高。** 现在的触发框是 `1.4 × 2.6` 格（`CONST.HIT.GATE_W/GATE_H`），
+   而飞船段出口的净空带是 **y∈[4,9]**（15 列通道逐列算出来的）。玩家若在出口一直按住（y>3.1）就会**错过回方块门**：
+   实测他仍以飞船模式撞死在 x=264 的第一根尖刺，或者干脆以 2x 飞过整个收尾段直接通关——后者等于把这一关最花心思的收尾白送。
+   飞船段 118–254 的那 15 根柱子**根本没有天花板**（实测 y≥11 以上全程无碰撞），玩家可以飞到关卡的任何高度。
 
-在 `T4c` 里补断言（**不新增用例，计数仍是 16**）：
+   **做法**：`CONST.HIT.GATE_H` 从 `2.6` 改成 **256**，触发框仍是
+   `{ x0: o.x, x1: o.x + GATE_W, y0: o.y, y1: o.y + GATE_H }`——**从门的底边往上延伸**；
+   `portal_ship` / `portal_cube` / `speed_*` 走同一条路径，**不按门型特判**。
+   **高度不是拍脑袋来的**：飞船爬升被 `CONST.SHIP.CAP_UP` 钳在 16 格/s；玩家在切船门 x=111.5 时还贴着地面（y≈0），
+   到回方块门 x=252.5 最多有 (252.5−111.5)/10.386 = 13.6 s（按最慢的 1x 算）→ 最多爬 **217 格**，256 盖得住（余量约 39 格）。
+   **24 盖不住**：实测从 x=111.5 起按住不放，x=252.4 时 y=177.83，两扇门（框 `[0.5,24.5]`）都够不着，
+   玩家以飞船 2x 直接飞过整个收尾段通关。
+   `T4c` 里有一条断言把这个界钉住：**按住不放时飞船段内能爬到的高度必须仍在门框内**
+   （实测 1x 最坏情况爬到 y=215.75，门框上沿 256.5，余量 40.75 格；关卡长度或飞船速度上限变了它会自己报警）。
+
+   **这不是"飞到多高都不会错过"**：关卡的飞船段没有封顶，玩家理论上还能飞到 y≥256.5 错过门——
+   那个洞记在 spec §13（要靠关卡封顶解决，不是靠门框）。
+   **门的 `o.y` 仍然有意义**：框的**底边**就是门的底边，所以地面上的玩家（框 `[0,1]`）能吃到 y=0.5 的门
+   （框 `[0.5, 256.5]`，`1 > 0.5` 成立）。**不要**把框的底边也改成 0——那会让悬在半空的门被地面玩家触发，语义就错了。
+   `T4c` 里有一条断言专门钉这一条：`portal_ship` 放在 y=6 时，贴地玩家必须**不**被切成 ship。
+   还有一条钉"**速度门同样通高**"（不按门型特判）：高空飞过 `speed_2x` 门必须变速到 2x——
+   只钉 `GATE_H` 常量不够，把 speed 分支单独改回 2.6 高的变异会全绿通过。
+
+   **留给 Task 9（渲染层）**：门变高之后不能还画成 2.6 格高的小椭圆门——`render.js` 的 `portal()`
+   要把它画成一根**通高门柱**（从门底一直画到画面顶，或至少画满 `CONST.HIT.GATE_H` 格），
+   否则画面上玩家看得见自己"飞过"了一根矮门柱，判定却生效了。
+
+2. **`portal_cube` 置 `onGround = true` 时必须清 `vy`。** 现在 `st.onGround = st.y <= GROUND + CONST.LAND_TOL;`
+   之后没清 `vy`，破坏了"在地面 ⇒ `vy == 0`"这条不变式——而自查记录第 15 条的台沿自由落体分支正依赖它：
+   飞船残余的 `vy` 带进方块模式会多飞一下（handoff 缺陷清单第 1 条）。
+   **做法**：置 `onGround = true` 的同时把 `vy` 清零；`onGround` 为假时**保留**船的 `vy`
+   （切换只换操作方式，不该凭空吃掉玩家上升的动量；空中保留并不消除"多飞一下"，
+   那是方块模式本来的跳跃弧线，留 Task 13 手感校准）。这条是**自定语义**，记进 spec §13。
+
+   在 `T4c` 里补断言（**不新增用例，计数仍是 16**）。下面这段已经并进 Step 1 的 `T4c` 用例里，
+   这里再列一遍是为了讲清楚它为什么这么写：
 
 ```js
   // 高空飞过回方块门也必须切成 cube：门的触发框要覆盖整条航道
   var hi = GD_Physics.create({
     objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
     meta: { endBlock: 100000 },
-    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+    // 段落的 mode 写 ship：这两个子场景里玩家是在**飞船**模式下飞过回方块门，
+    // 若写成 cube，玩家一旦死亡重开就会变成 cube，"高空飞过也应切成 cube"就假绿了。
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
   });
   hi.mode = 'ship'; hi.y = 9; hi.vy = 0;
   for (var k = 0; k < 240 * 3 && hi.alive && hi.mode === 'ship'; k++) {
-    hi.y = 9; hi.vy = 0;            // 把飞船钉在航道顶端，模拟"一直按住往上飞"
+    hi.y = 9; hi.vy = 0;            // 把飞船悬停在 y=9（远高于旧门框的 3.1），模拟"飞到高处再过门"
     GD_Physics.step(hi, false);
   }
   GD_ASSERT.ok(hi.mode === 'cube',
     '高空飞过回方块门也应切成 cube，实为 ' + hi.mode + '（y=' + hi.y.toFixed(2) + '）');
 
+  // 悬在半空的门不能被贴地玩家吃到：触发框的底边就是门的底边（o.y），
+  // 不能改成 0——那样"这一层高度的门"就变成"整根柱子都触发"，语义就错了。
+  var air = GD_Physics.create({
+    objects: [{ x: 10, y: 6, t: 'portal_ship' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+  });
+  for (var a = 0; a < 240 * 3 && air.alive; a++) GD_Physics.step(air, false);
+  GD_ASSERT.ok(air.mode === 'cube',
+    '悬在半空的门不该被贴地玩家触发，实为 ' + air.mode + '（x=' + air.x.toFixed(2) + '）');
+
+  // 速度门与传送门走同一条路径（不按门型特判）：高空飞过 speed_2x 门也必须变速。
+  // 只钉 GATE_H 常量不够——把 speed 分支单独改回 2.6 高的变异会全绿通过。
+  var spd = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'speed_2x' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  spd.mode = 'ship'; spd.y = 5; spd.vy = 0;
+  for (var sp = 0; sp < 240 * 3 && spd.alive; sp++) { spd.y = 5; spd.vy = 0; GD_Physics.step(spd, false); }
+  GD_ASSERT.ok(spd.speedKey === 2, '高空飞过 speed_2x 门也应变速到 2x，实为 ' + spd.speedKey);
+
   // 切回方块的那一刻，"在地面 ⇒ vy==0"必须成立（handoff 缺陷清单第 1 条）
   var g = GD_Physics.create({
     objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
     meta: { endBlock: 100000 },
-    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
   });
   g.mode = 'ship'; g.y = 0.2; g.vy = 16;    // 贴着地面、正要往上冲的飞船
   for (var k2 = 0; k2 < 240 * 3 && g.alive; k2++) {
@@ -1456,14 +1834,88 @@ GD_Physics.create({
     if (g.mode === 'cube') break;                       // 刚切回来的那一瞬间
   }
   GD_ASSERT.ok(g.mode === 'cube', '贴地过回方块门应切成 cube，实为 ' + g.mode);
+  // 这条是**护栏**：当前恒真（onGround 会被 collide() 尾部的落地判定改回 false），
+  // 拦不住真正的症状。留着是为了万一哪天真的"在地面却带着 vy"，标签能一眼看出
+  // 这是有意保留的检查，而不是忘了删的废断言。
   GD_ASSERT.ok(!(g.onGround && g.vy !== 0),
-    '切回方块后若在地面，vy 必须为 0，实为 vy=' + g.vy + ' onGround=' + g.onGround);
+    '切回方块后若在地面，vy 必须为 0（当前恒真，见上方注释：onGround 会被 collide() 尾部改回 false）实为 vy=' + g.vy + ' onGround=' + g.onGround);
+  // 上面那条恒真，拦不住真正的症状——飞船残余的 vy 被带进方块模式，
+  // 方块会再往上飞一截。改成直接钉住 vy：
+  GD_ASSERT.near(g.vy, 0, 1e-9, '切回方块那一刻 vy 必须归零（修复前实测 15.77）');
+  // 行为层面：切回方块后不该继续上升（修复前从 y=0.266 被顶到 1.3475，修复后落回地面）
+  var ySwitch = g.y, peak = g.y;
+  for (var m = 0; m < 240; m++) {
+    GD_Physics.step(g, false);
+    if (g.y > peak) peak = g.y;
+  }
+  GD_ASSERT.ok(peak <= ySwitch + 1e-9,
+    '切回方块后不应被飞船残余速度顶上天，实测峰值 ' + peak.toFixed(4) +
+    '（切回时 y=' + ySwitch.toFixed(4) + '）');
+
+  // 空中切回方块必须**保留**上升速度：把 vy 无条件清零（连空中也清）会让
+  // ship→cube 的转换变成"凭空掉下来"。这里只钉"不被清成 0"，不钉具体数值——
+  // 手感数值留给 Task 13 校准，本条只钉"地面清 / 空中不清"这个分支区别。
+  var air2 = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'ship', speed: 1 }]
+  });
+  air2.mode = 'ship'; air2.y = 5; air2.vy = 16;
+  for (var n2 = 0; n2 < 240 * 3 && air2.alive; n2++) {
+    if (air2.mode === 'ship') { air2.y = 5; air2.vy = 16; }
+    GD_Physics.step(air2, false);
+    if (air2.mode === 'cube') break;
+  }
+  GD_ASSERT.ok(air2.mode === 'cube', '高空过回方块门应切成 cube，实为 ' + air2.mode);
+  GD_ASSERT.ok(air2.vy > 0, '空中切回方块应保留上升速度（vy>0），实为 vy=' + air2.vy);
+
+  // 门框必须盖得住"飞船段内能爬到的高度"：玩家从切船门起一直按住，
+  // 理论上能爬到 (252.5−111.5)/10.386 × 16 ≈ 217 格（按最慢的 1x 算），
+  // GATE_H = 256 盖得住。关卡只放两扇门（飞船段的柱阵会把玩家撞死，
+  // 这里要的是"纯爬升上界"），门的 x 从真实关卡里读——关卡长度改了，这个界会跟着动。
+  var lvGates = GD_Level.crossbeat.objects.filter(function (o) {
+    return o.t === 'portal_ship' || o.t === 'portal_cube';
+  });
+  var shipGate = lvGates.filter(function (o) { return o.t === 'portal_ship'; })[0];
+  var cubeGate = lvGates.filter(function (o) { return o.t === 'portal_cube'; })[0];
+  var climb = GD_Physics.create({
+    objects: [{ x: shipGate.x, y: shipGate.y, t: 'portal_ship' },
+              { x: cubeGate.x, y: cubeGate.y, t: 'portal_cube' }],
+    meta: { endBlock: 1e9 },
+    segments: [{ from: 0, to: 1e9, mode: 'ship', speed: 1 }]
+  });
+  climb.mode = 'ship'; climb.speedKey = 1;      // 按最慢的 1x 算 = 爬升时间的上界
+  climb.x = shipGate.x - 0.5; climb.y = 0; climb.vy = 0; climb.onGround = false;
+  var maxY = 0;
+  for (var cl = 0; cl < 240 * 40 && climb.alive && climb.x < cubeGate.x - 0.5; cl++) {
+    GD_Physics.step(climb, true);               // 一直按住
+    if (climb.y > maxY) maxY = climb.y;
+  }
+  GD_ASSERT.ok(maxY < C.HIT.GATE_H,
+    '按住不放时飞船段内爬到的高度必须仍在门框内，实测 ' + maxY.toFixed(2) +
+    '（门框上沿 ' + (cubeGate.y + C.HIT.GATE_H).toFixed(1) + '）');
 ```
+
+   实测：切回方块那一刻玩家在 y=0.2662、修复前 `vy = 15.77`，方块被顶到 y=1.3475（多飞 1.08 格）；
+   修复后 `vy = 0`，方块落回地面。空中切回（y=5）则**保留** `vy = 15.77`。
+   计划原版那条 `!(onGround && vy !== 0)` **实测恒真**（`collide()` 尾部的落地判定会把 `onGround`
+   改回 false——玩家在 y=0.266 > 地面 0），拦不住真正的症状，所以另加了两条有牙齿的：
+   `near(g.vy, 0, 1e-9)` 与"切回后峰值不高于切回时的高度"；再加一条钉"空中不清"：
+   `ok(air2.vy > 0)`——只钉分支区别，不钉具体数值（手感数值留给 Task 13）。
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git commit -m "feat: 飞船模式与传送门切换，锁定水平速度与方块一致"
+cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js level.js tests docs/superpowers/plans/2026-11-01-geometry-dash-clone.md && git commit -m "feat: 飞船模式与传送门切换，门的触发框改成通高
+
+飞船段没有天花板，门只有 2.6 格高就等于飞到别的高度就永远切不回方块模式：
+玩家在出口一直按住会错过回方块门，要么撞死在 x=264 的第一根尖刺，
+要么以 2x 飞过整个收尾段直接通关。门框改成从底边往上 256 格的通高框，
+高度按可推导的上界取（飞船段内最多爬 217 格），底边仍是门的 y，
+悬在半空的门不会被地面玩家触发。
+
+切回方块时若判定为站在地面上，必须同时清零 vy：在地面 ⇒ vy==0 是不变式，
+飞船残余的 vy 带进方块模式会让方块多飞一下；空中则保留 vy，不凭空吃掉动量。"
 ```
 
 ---
@@ -1575,6 +2027,11 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git 
 渲染层难以做无头断言，本任务的验证方式是**截图对比**（Step 4）。物理正确性已由 T1–T6 保证，这里只验"画面对不对"。
 
 - [ ] **Step 1: 写 render.js**
+
+**门的画法（Task 7 之后新增）**：`physics.js` 的门触发框已经改成**通高**
+（`CONST.HIT.GATE_H = 256`，从门底 `o.y` 往上延伸），所以 `portal()` 必须把门画成一根
+**通高门柱**（从门底一直画到画面顶），不能还画成 2.6 格高的小椭圆门——
+否则画面上玩家看得见自己"飞过"了一根矮门柱，判定却生效了。
 
 `render.js`：
 
@@ -2078,6 +2535,47 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.j
 - Create: `tests/replay.test.js`
 - Modify: `tests/harness.html`（两个 `<script src>` 标签 Task 1 就已写好，本任务只把 `expect_tests` 涨到 20）
 
+### 预研结论（2026-11-08 接手后补做，**先读这段，能省掉一整轮试错**）
+
+已经用机器人把这一关打通过一次了，**关卡本身不需要改**——`level.js` 的 23 个 cube 障碍组逐组实测全部 ≥9/65 个起跳阈值可过，没有死局。下面三条是会改变本任务写法的实测结论：
+
+1. **真实速度剖面是 `1x[0,115.5] / 2x(115.5,253.5] / 1x[253.5,360]`**，不是 segments 的 118/254。
+   传送门与速度门在"玩家前沿（x+0.5）碰到门的 x"时才生效，实测切换点：
+   `portal_ship@112 → x111.5`、`speed_2x@116 → x115.5`、`portal_cube@253 → x252.5`、`speed_1x@254 → x253.5`。
+   朴素的 `x / 10.386` 在 x=254 偏 **+2.62 s**；按段表算也还偏 **+0.047 s**（118 vs 115.5 与 254 vs 253.5 正好抵消），
+   而双刺的可通过窗口只有 0.825 格（≈0.079 s）——0.047 s 已经吃掉一大半。
+   → 本任务的 `tOf()` **从关卡里的速度门推导档位**（Step 4 的初版代码已经这么写了），别再手写段表。
+
+2. **两个速度门是"隐形杀手"，断言必须加时长与切换点。**
+   > **下面这三条是旧门高（2.6 格）下的实测结论。Task 7 起门框通高（`GATE_H = 256`），
+   > 速度门与传送门走同一条路径，"必须压低/俯冲"已经变成可选动作——但断言要留着。**
+   `speed_2x@116` 的命中框要求飞船在 x115.5–117.4 时 **y<2.1** 才吃得到；漏了 → 全程 1x → **34.66 s**。
+   `portal_cube@253` / `speed_1x@254` 要求在 x252.5–255.9 前**俯冲回低处**；漏前者 → 仍是飞船 → 撞死 x=264 的第一根尖刺；
+   漏后者 → 后半段跑 2x → **30.05 s**。
+   **这两种"假通关"的 `finished` 也是 true**，光断 `finished`/`percent` 会放过它们。
+   → Step 1 的断言要加上 `time ∈ [31.36, 32.64]` 和四个切换点。
+   **Task 7 之后**：门框通高后 `speed_2x@116` 不再要求 y<2.1，`speed_1x@254` 也不再要求俯冲回低处；
+   上面"漏掉 → 34.66 s / 30.05 s"只是**旧门高下的现象记录**，但**断言仍然保留**——
+   将来若有人把门高改小，时长断言是唯一的警报。
+   （预研测出的那条通关序列在 Task 7 之后**仍然有效**：已复核 `finished=true, percent=100, time=32.0625s`，
+   四个切换点一个不差——那条序列本来就在出口处贴地飞，旧门框 `[0.5,3.1]` 就够得着。）
+
+3. **本任务初版草稿里的飞船策略不能用。**
+   草稿写的是"每 0.42 s 按 0.22 s"，实测**连第一根柱 126 都过不去**。
+   飞船必须**按柱排程**：目标 = 下一根要进入的柱子的带心；先压低吃 2x 门，末尾俯冲吃 253/254 两个门。
+   （"先压低吃 2x 门、末尾俯冲"是**旧门高下的必要动作**；Task 7 门框通高后这两步都变成可选动作。）
+
+另外两条记录（不阻塞，但要知道）：
+
+- **飞船段 118–254 根本没有天花板**：实测 `y≥11` 以上全程无碰撞，机器人是从柱阵**顶上**飞过去的。
+  （Task 7 之后这个"没天花板"还有个后果：玩家按住不放能爬到 y≈173（2x）/ 216（1x），
+  **飞到 y≥256.5 仍会错过回方块门**——通高门框只解决了"通道内/出口附近"这一段，见 spec §13。）
+  而且致命判定用 0.3×0.3 的缩小核心框 → 柱列之间 0.4 格宽的"贴缝"也能擦过去。
+  这是关卡的设计漏洞（不是 bug），要改属于关卡重设计，本任务不碰。
+- 物理上限（隔离实测，65 个起跳阈值）：柱高 1/2 格 41/28 可过，**柱高 3 格及以上 0/65**；
+  刺宽 1/2 格 19/9 可过，**刺宽 3 格及以上 0/65**（需连续 y≥0.55 跨度 3.550 格，实测窗口只有 3.462 格）。
+  关卡里已经没有 3 格柱和 3 连刺了，别再放回去。
+
 - [ ] **Step 1: 写回放测试**
 
 `tests/replay.test.js`（这是最后一条用例，累计 20 条；把 `GD_ASSERT.expect_tests(...)` 改成 20）：
@@ -2087,9 +2585,13 @@ GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
   var st = GD_Physics.create(GD_Level.crossbeat);
   var seq = GD_Replay.crossbeat, si = 0, held = false, diedAt = -1;
   var maxSteps = 240 * 40;
+  // 记录模式/速度的切换点：漏掉任一速度门，回放也会 finished=true，只是时长变了
+  var sw = { mode: [], speed: [] }, prevMode = st.mode, prevSpeed = st.speedKey;
   for (var n = 0; n < maxSteps && !st.finished; n++) {
     while (si < seq.length && seq[si].t <= st.time) { held = seq[si].d; si++; }
     GD_Physics.step(st, held);
+    if (st.mode !== prevMode) { sw.mode.push(st.x); prevMode = st.mode; }
+    if (st.speedKey !== prevSpeed) { sw.speed.push(st.x); prevSpeed = st.speedKey; }
     if (!st.alive && diedAt < 0) diedAt = st.x;
     if (!st.alive) break;
   }
@@ -2098,6 +2600,17 @@ GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
       '% 停在 x=' + st.x.toFixed(1) + (diedAt >= 0 ? '，首次死亡 @' + diedAt.toFixed(1) : ''));
   }
   GD_ASSERT.ok(st.percent >= 100, 'percent 应 ≥100');
+  // 时长也要钉住：漏掉 speed_2x@116 → 全程 1x → 34.66 s；漏掉 speed_1x@254 → 后半段跑 2x → 30.05 s。
+  // 这两种"假通关"的 finished 也是 true，只断 finished/percent 会放过它们。
+  GD_ASSERT.ok(st.time >= 31.36 && st.time <= 32.64,
+    '通关时长应在 32.0 ±2% 内，实测 ' + st.time.toFixed(4) + ' s');
+  // 四个切换点：真实速度剖面是 1x[0,115.5] / 2x(115.5,253.5] / 1x[253.5,360]
+  GD_ASSERT.ok(sw.mode.length === 2, '应有两次模式切换，实测 ' + sw.mode.length);
+  GD_ASSERT.ok(sw.speed.length === 2, '应有两次速度切换，实测 ' + sw.speed.length);
+  GD_ASSERT.near(sw.mode[0], 111.5, 0.5, '切成飞船的 x');
+  GD_ASSERT.near(sw.speed[0], 115.5, 0.5, '变 2x 的 x');
+  GD_ASSERT.near(sw.mode[1], 252.5, 0.5, '切回方块的 x');
+  GD_ASSERT.near(sw.speed[1], 253.5, 0.5, '回 1x 的 x');
 });
 ```
 
@@ -2129,10 +2642,21 @@ GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
 
 - [ ] **Step 4: 迭代闭环（死亡点 → 改按键序列或改关卡 → 重跑）**
 
+**先看上面「预研结论」那一节**——本任务初版草稿里的飞船策略（每 0.42 s 按 0.22 s）实测连第一根柱 126 都过不去，
+`tOf()` 的段表边界也差 0.047 s（双刺窗口只有 0.079 s）。预研已经产出一条**验证过通关**的按键序列
+（`finished=true, percent=100, time=32.0625s`，切换点 x=111.520/115.501/252.551/253.519，±1 步扰动 60/88 仍通关），
+它会作为 `docs/superpowers/research/t12-replay-fixture.js` 一并入库，**直接复制成 `tests/replay.js` 的初版**，
+不要手写。复制后按下面三条规则核对，**任何一条不满足就说明物理或回放语义变了，序列必须重新生成**：
+
+1. 时间约定是 `t = (step-0.5)*DT`，配合 `seq[si].t <= st.time` 恰好在第 step 步生效。
+2. 步数上限用 `240*40`（写死 6000 步只能跑到 x≈259，会让 x>254 的整段集体"看起来打不通"）。
+3. 断言要连**时长**和**四个切换点**一起断（Step 1 已经这么写了）——只断 `finished`/`percent` 会放过两种假通关。
+
 规则，按优先级：
 
 1. **跳跃时机类死亡**（撞刺、撞墙脚）→ 修 `tests/replay.js` 的按键时刻。关卡是对的，是"机器人不会玩"。
 2. **物理上不可能**（如某柱阵需要 2.5 格跳高、飞行通道净空 < 玩家 1 格 + 容错）→ 修 `level.js` 的坐标。这是关卡设计错误，必须改关卡。
+   （**预研已经查过：当前关卡没有物理上过不去的障碍**，23 个 cube 组逐组实测全部 ≥9/65，所以这一条大概率用不上。）
 3. 每次只改一处，重跑 Step 2。不要一次改十个点——无法归因。
 
 `tests/replay.js` 初版。
