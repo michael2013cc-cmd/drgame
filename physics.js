@@ -188,9 +188,14 @@ window.GD_Physics = (function () {
   // held 必须传进来：跳环是"按下才触发"的，少了这个形参严格模式下会抛
   // ReferenceError（实测关卡里只要有 ring，玩家一进其 3 格邻域整个模拟就炸）。
   function collide(st, held) {
-    var list = nearby(st), pb = playerBox(st), i, o;
+    var list = nearby(st), pb, i, o;
 
     for (i = 0; i < list.length; i++) {
+      // 玩家框每轮重算：循环里会改 st.y（落到方块顶时 st.y = top），
+      // 沿用进循环前算的那一个框会让同一帧里出现两套玩家框——
+      // 尖刺/跳板/传送门拿旧框判，而跳环分支又现算了一个新框，
+      // 于是"落地"和"撞墙"可能落在不同的框上。
+      pb = playerBox(st);
       o = list[i].o;
       if (o.t === 'spike') {
         if (overlap(pb, boxOf(o))) { die(st); return; }
@@ -221,7 +226,7 @@ window.GD_Physics = (function () {
         }
       } else if (o.t === 'ring_pink' || o.t === 'ring_yellow') {
         if (st.used[list[i].i]) continue;
-        if (held && overlap({ x0: st.x - 0.5, x1: st.x + 0.5, y0: st.y, y1: st.y + 1 },
+        if (held && overlap(pb,
                             { x0: o.x + CONST.HIT.RING_X0, x1: o.x + CONST.HIT.RING_X1,
                               y0: o.y + CONST.HIT.RING_Y0, y1: o.y + CONST.HIT.RING_Y1 })) {
           st.vy = CONST.RING[o.t]; st.onGround = false; st.used[list[i].i] = true;

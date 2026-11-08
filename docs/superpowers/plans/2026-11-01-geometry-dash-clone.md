@@ -521,9 +521,14 @@ window.GD_Physics = (function () {
   // held 必须传进来：跳环是"按下才触发"的，少了这个形参严格模式下会抛
   // ReferenceError（实测关卡里只要有 ring，玩家一进其 3 格邻域整个模拟就炸）。
   function collide(st, held) {
-    var list = nearby(st), pb = playerBox(st), i, o;
+    var list = nearby(st), pb, i, o;
 
     for (i = 0; i < list.length; i++) {
+      // 玩家框每轮重算：循环里会改 st.y（落到方块顶时 st.y = top），
+      // 沿用进循环前算的那一个框会让同一帧里出现两套玩家框——
+      // 尖刺/跳板/传送门拿旧框判，而跳环分支又现算了一个新框，
+      // 于是"落地"和"撞墙"可能落在不同的框上。
+      pb = playerBox(st);
       o = list[i].o;
       if (o.t === 'spike') {
         if (overlap(pb, boxOf(o))) { die(st); return; }
@@ -554,7 +559,7 @@ window.GD_Physics = (function () {
         }
       } else if (o.t === 'ring_pink' || o.t === 'ring_yellow') {
         if (st.used[list[i].i]) continue;
-        if (held && overlap({ x0: st.x - 0.5, x1: st.x + 0.5, y0: st.y, y1: st.y + 1 },
+        if (held && overlap(pb,
                             { x0: o.x + CONST.HIT.RING_X0, x1: o.x + CONST.HIT.RING_X1,
                               y0: o.y + CONST.HIT.RING_Y0, y1: o.y + CONST.HIT.RING_Y1 })) {
           st.vy = CONST.RING[o.t]; st.onGround = false; st.used[list[i].i] = true;
@@ -1923,13 +1928,14 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js level.js test
 ## Task 8: 随机稳定性（T6）与架构约束（D1）
 
 **Files:**
-- Modify: `tests/physics.test.js`（追加 T6 / T6b / D1）
+- Modify: `tests/physics.test.js`（追加 T6 / T6b / D1 / T5d）
 - Modify: `tests/assert.js`（追加 `SOURCES` 预取）
-- Modify: `tests/harness.html`（末尾脚本改为等预取完成再 run，`expect_tests` 涨到 19）
+- Modify: `tests/harness.html`（末尾脚本改为等预取完成再 run，`expect_tests` 涨到 20）
+- Modify: `physics.js`（Step 3：`collide()` 的玩家框每轮重算）
 
 - [ ] **Step 1: 写测试**
 
-追加 T6 / T6b / D1 三条到 `tests/physics.test.js`：
+追加 T6 / T6b / D1 / T5d 四条到 `tests/physics.test.js`：
 
 ```js
 GD_ASSERT.test('T6 随机输入 3000 步无异常无 NaN', function () {
@@ -1949,9 +1955,39 @@ GD_ASSERT.test('T6 随机输入 3000 步无异常无 NaN', function () {
 
 GD_ASSERT.test('T6b 死亡重开 20 次状态干净', function () {
   var st = GD_Physics.create(GD_Level.crossbeat);
-  for (var i = 0; i < 240 * 60; i++) GD_Physics.step(st, false);   // 一直不按，必然撞刺
-  GD_ASSERT.ok(st.attempt >= 2, '应至少重开一次，attempt=' + st.attempt);
-  GD_ASSERT.near(st.x, 0, 12, '重开后应仍在开局附近，实为 ' + st.x);
+  var seg0 = st.level.segments[0];
+  // 一直不按必然撞刺；撞死后 DEATH_DELAY 步就自动重开一次（实测一个循环 558 步）。
+  // 断言必须在**刚重开**的那一刻取状态：死亡延时期间 st.x 还停在死亡点。
+  // 计划原版在固定 14400 步之后取样，而那个窗口实测正好落在死亡延时里
+  // （alive=false、deadTimer=0.45、x=13.76145=死亡点），于是 near(st.x, 0, 12) 必然红——
+  // 那不是 respawn() 漏字段，是取样时机不对（逐字段体检见下：刚重开时状态全干净）。
+  // 改成按重开次数取样，断言反而更严：每次重开的当刻都要逐字段干净。
+  var respawns = 0, steps = 0, guard = 240 * 60 * 3, dirty = [];
+  while (respawns < 20 && steps < guard) {
+    var before = st.attempt;
+    while (st.attempt === before && steps < guard) { GD_Physics.step(st, false); steps++; }
+    if (st.attempt === before) break;              // 没等到重开：不该发生，报在下面
+    respawns++;
+    // 逐字段对照 create()：重开后的状态必须干净（漏清一个字段就记下来）
+    var bad = [];
+    if (st.x !== 0) bad.push('x=' + st.x);
+    if (st.y !== 0) bad.push('y=' + st.y);
+    if (st.vy !== 0) bad.push('vy=' + st.vy);
+    if (st.rot !== 0) bad.push('rot=' + st.rot);
+    if (st.percent !== 0) bad.push('percent=' + st.percent);
+    if (st.time !== 0) bad.push('time=' + st.time);
+    if (st.deadTimer !== 0) bad.push('deadTimer=' + st.deadTimer);
+    if (!st.alive) bad.push('alive=false');
+    if (st.finished) bad.push('finished=true');
+    if (!st.onGround) bad.push('onGround=false');
+    if (st.mode !== seg0.mode) bad.push('mode=' + st.mode);
+    if (st.speedKey !== seg0.speed) bad.push('speedKey=' + st.speedKey);
+    if (Object.keys(st.used).length !== 0) bad.push('used=' + Object.keys(st.used).length);
+    if (bad.length) dirty.push('第 ' + respawns + ' 次重开: ' + bad.join(','));
+  }
+  GD_ASSERT.ok(respawns >= 20, '应至少重开 20 次，实得 ' + respawns + ' 次（' + steps + ' 步）');
+  GD_ASSERT.ok(st.attempt >= 21, 'attempt 应随重开累加（起于 1），实为 ' + st.attempt);
+  GD_ASSERT.ok(dirty.length === 0, '重开后状态不干净: ' + dirty.join(' | '));
 });
 
 // spec §5 的架构约束：physics.js 不得引用渲染/输入/音频/HUD。
@@ -1964,7 +2000,54 @@ GD_ASSERT.test('D1 physics.js 不依赖渲染层', function () {
     GD_ASSERT.ok(src.indexOf(bad) < 0, 'physics.js 不应出现 ' + bad);
   });
 });
+
+// handoff 缺陷清单第 5 条：方块落地判定里的 `st.vy <= 0` 此前**零覆盖**
+// （实测把它去掉，16 条断言照样全绿）。这个条件是"上升中撞墙 = 死"的唯一保证：
+// 去掉它，玩家上升中撞到方块侧面会被当成落地，吸到方块顶上——撞墙就不算撞墙了。
+// 本用例把这个条件钉住。
+// （注意：本用例的场景里玩家**照样会死**，只是死之前被吸到了柱顶——
+// 所以光断"死了"抓不住这个变异，必须连位置与 vy 一起断，见下面的注释。）
+GD_ASSERT.test('T5d 上升中撞墙应致死（落地判定的 vy<=0 护栏）', function () {
+  var C = GD_Physics.CONST, dt = C.DT;
+  // 场景：玩家在 2 格柱旁**上升中**撞进柱子（x=6 的 y=0 与 y=1 两格）。
+  // 起点取 y=0.9：正好落在"落地吸附容差"之内（top-0.33=0.67 < 0.9），
+  // 所以只要落地判定里的 vy<=0 被去掉，玩家就会被吸到柱顶（y=1）而不是撞死。
+  // 正确实现下玩家是**撞死**的：缩小核心框（0.3×0.3，中心在玩家腰高 1.4）
+  // 与柱顶那一格的核心框（中心 1.5）重叠 → 死。
+  function riseInto(objs) {
+    var st = GD_Physics.create(LV(objs));
+    st.x = 6.5; st.y = 0.9; st.vy = 10; st.onGround = false;
+    GD_Physics.step(st, false);
+    return st;
+  }
+  var hit = riseInto([{ x: 6, y: 0, t: 'block' }, { x: 6, y: 1, t: 'block' }]);
+  GD_ASSERT.ok(!hit.alive, '上升中撞进方块必须死亡，实得 alive=' + hit.alive + ' y=' + hit.y);
+  // 关键在"没被吸到方块顶上"：落地分支一旦触发，st.y 会被改成 top(=1) 且 vy 清零。
+  // 只断"死了"抓不住这个变异——去掉 vy<=0 之后玩家**照样死**（死在柱顶那一格），
+  // 区别只在死之前被吸到了 y=1、vy=0。所以位置与 vy 必须一起钉。
+  GD_ASSERT.near(hit.y, 0.9 + 10 * dt - 0.5 * C.G * dt * dt, 1e-9,
+    '撞死时的 y 应保持撞上去那一刻的值（没被吸到柱顶 1），实为 ' + hit.y);
+  GD_ASSERT.ok(hit.vy > 0, '撞死时 vy 仍应为正（落地分支会把 vy 清零），实为 ' + hit.vy);
+  // 对照组：同样的起点，关卡里没有方块 → 不该死，而且要继续上升。
+  var ctl = riseInto([]);
+  GD_ASSERT.ok(ctl.alive, '没有方块时不该死');
+  GD_ASSERT.ok(ctl.y > 0.9, '没有方块时应继续上升，实得 y=' + ctl.y);
+
+  // 反面：下落中踩到方块顶必须仍然是"落地"（不是撞墙）。
+  // 玩家从 y=1.2、vy=-8 落到 1 格方块顶上：脚越过顶面之后落地分支接管，
+  // st.y 被吸到 1、vy 清零、onGround 变真。
+  var fall = GD_Physics.create(LV([{ x: 6, y: 0, t: 'block' }]));
+  fall.x = 6.5; fall.y = 1.2; fall.vy = -8; fall.onGround = false;
+  var n = 0;
+  while (!fall.onGround && n++ < 240) GD_Physics.step(fall, false);
+  GD_ASSERT.ok(fall.alive, '下落中踩到方块顶不该死');
+  GD_ASSERT.near(fall.y, 1, 1e-9, '应被吸到方块顶 y=1，实为 ' + fall.y);
+  GD_ASSERT.near(fall.vy, 0, 1e-9, '落地后 vy 应为 0，实为 ' + fall.vy);
+});
 ```
+
+T5d 是 handoff 缺陷清单第 5 条要求的补丁：方块落地判定里的 `st.vy <= 0` 此前**零覆盖**
+（实测把它去掉，全部断言照样绿），必须补一条"上升中撞墙应致死"的断言把它钉住。
 
 `tests/assert.js` 需要加源码预取（Task 1 已建文件，本步补上）：
 
@@ -1979,13 +2062,13 @@ GD_ASSERT.SOURCES = {};
 })();
 ```
 
-`harness.html` 的 `GD_ASSERT.run()` 调用前需等预取完成——把末尾脚本改为（`expect_tests` 涨到 19，且必须在 `run()` **之前**调用，所以它落在轮询循环里 `run()` 的那一行上面，不是循环外面）：
+`harness.html` 的 `GD_ASSERT.run()` 调用前需等预取完成——把末尾脚本改为（`expect_tests` 涨到 20，且必须在 `run()` **之前**调用，所以它落在轮询循环里 `run()` 的那一行上面，不是循环外面）：
 
 ```js
   var waited = 0;
   (function wait() {
     if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
-      GD_ASSERT.expect_tests(19);
+      GD_ASSERT.expect_tests(20);
       var res = GD_ASSERT.run();
       res.loadErrors = window.__LOAD_ERRORS__ || [];
       res.runErrors = window.__RUN_ERRORS__ || [];
@@ -1999,9 +2082,18 @@ GD_ASSERT.SOURCES = {};
 
 - [ ] **Step 2: 跑测试确认通过**
 
-预期：`pass: 19, fail: 0, registered: 19, runErrors: []`。若 `T6b` 的 x 越界，说明 `respawn()` 漏了某个字段——对照 `create()` 逐字段检查。
+预期：`pass: 20, fail: 0, registered: 20, runErrors: []`。
 
-`D1` 在此任务时 `render.js`/`hud.js`/`input.js`/`audio.js` 还不存在，预取只会拿到 2 个源文件——预取的 `waited > 40` 超时兜底正是为此而写，D1 检查的 `physics.js` 已就位，不受影响。
+**T6b 与计划原版的偏差（2026-11-08 实测后修正）**：计划原版的 T6b 跑满 `240*60` 步之后取 `st.x`，
+并断 `near(st.x, 0, 12)`。实测那个取样点**落在死亡延时里**（`alive=false`、`deadTimer=0.45`、
+`x=13.76145`——正是第一根尖刺 x=14 的死亡点，`attempt` 已累到 26），于是断言必然红（13.76 > 12）。
+**不是 `respawn()` 漏字段**：刚重开那一刻逐字段体检全干净（x=0、y=0、vy=0、rot=0、percent=0、time=0、
+deadTimer=0、onGround=true、mode=cube、speedKey=1、`used` 为空）。改成"每次重开当刻取样"，
+断言反而更严（`x` 精确为 0，而不是"离 0 不超过 12 格"）。
+
+`D1` 在此任务时 `render.js`/`hud.js`/`input.js`/`audio.js` 还不存在，预取只会拿到 404 的响应体——
+`fetch` 对 404 是 **resolve 不是 reject**，所以 `SOURCES` 里照样有 6 个键，轮询的 `>= 6` 条件能满足；
+`waited > 40` 的超时兜底是保险。D1 只检查 `physics.js`，不受影响。
 
 - [ ] **Step 3: 修掉 `collide` 里过期的玩家框（handoff 缺陷清单第 3b 条）**
 
@@ -2009,12 +2101,40 @@ GD_ASSERT.SOURCES = {};
 
 当前关卡触发不到（所有尖刺都在 y=0，落地吸附最多把 y 抬到 `LAND_TOL=0.33`，而尖刺框高 0.55；且块与尖刺最近相距 6 格，超出 `nearby()` 的 ±3 格窗口），所以**这是潜伏缺陷，不是当前 bug**。但只要关卡里出现"离地尖刺"且与落地同帧，就会误判死亡。
 
-修法：玩家框每轮重算（或者在改过 `st.y` 之后重算），不要跨对象复用。改完必须重跑关卡可通性扫描确认 `zeroTapGroups` 仍为空——这是行为改动，不是纯重构。
+修法：玩家框每轮重算（不要跨对象复用），跳环分支也改用同一个 `pb`，一帧里只有一套玩家框。
+
+**改完的三项验收（实测，2026-11-08）**：
+
+1. **关卡可通性扫描**：23 个 cube 障碍组逐组隔离、每组扫 65 个起跳阈值（步数上限 `240*40`）——
+   单刺 20/65（x=330 那根 19/65）、双刺 10/65、2 格柱 30/65、`zeroTapGroups: []`，与修复前**逐组相同**。
+2. **已验证的通关序列**（`docs/superpowers/research/t12-replay-fixture.js`，用计划 `replay.test.js` 的原样回放循环）：
+   `finished=true`、`percent=100`、`time=32.0625 s`、四个切换点 x=111.520 / 115.501 / 252.551 / 253.519，全程无死亡——与修复前**完全相同**。
+3. **逐帧对拍**：把修复前的 physics.js（计划 Task 2 的旧块）与磁盘上的新 physics.js 跑同一串输入
+   （5 个随机种子 × `240*40` 步 + 通关序列全程），共比对 **55700 帧，差异 0 处**。
+
+> **残留缺口（如实记录）**：这个修复**没有**一条能把它跑红的单元断言。把玩家框退回"进循环前算一次"，
+> 20 条断言照样全绿——因为落地吸附最多把玩家框抬高 `LAND_TOL=0.33`，而要看出差别，
+> 后续对象的命中框必须落在这 0.33 宽的缝里。尖刺的框高 0.55，要落进这道缝，
+> 就得让尖刺的框整个嵌在方块那一格里（关卡里不存在这种构造），所以**当前关卡与任何合理关卡都观察不到它**。
+> 它的保护网只有上面三项（可通性扫描 + 通关序列 + 逐帧对拍）。若将来要一条专门的红灯断言，
+> 只能写一条"白盒探针"（人为造一个尖刺嵌在方块格里的关卡），那会钉住一条没有物理意义的边界情形，
+> 本任务不写。
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git commit -m "test: 随机输入稳定性、重开清洁度与 physics 层依赖约束"
+cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests docs/superpowers/plans/2026-11-01-geometry-dash-clone.md docs/superpowers/HANDOFF-2026-11-08.md && git commit -m "test: 随机输入稳定性、重开清洁度与 physics 层依赖约束
+
+随机输入 3000 步必须无 NaN 不穿地；死亡重开 20 次的状态要逐字段干净——
+断言取在**刚重开**的那一刻，计划原版取在固定 14400 步之后，
+那个窗口实测落在死亡延时里（x 还是死亡点 13.76），测的不是重开后的状态。
+
+D1 用 fetch 预取的源码做静态断言：physics.js 里不许出现渲染/输入/音频层的任何符号，
+这条保证物理能在不加载任何渲染代码的情况下被驱动到任意时刻。
+
+另补 T5d：方块落地判定里的 vy<=0 此前零覆盖，去掉它之后上升中撞墙会被当成落地。
+collide 的玩家框改成每轮重算（同一帧不再有两套玩家框），
+并用可通性扫描、通关序列与 55700 帧逐帧对拍证明当前关卡上行为不变。"
 ```
 
 ---
@@ -2578,7 +2698,7 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.j
 
 - [ ] **Step 1: 写回放测试**
 
-`tests/replay.test.js`（这是最后一条用例，累计 20 条；把 `GD_ASSERT.expect_tests(...)` 改成 20）：
+`tests/replay.test.js`（这是最后一条用例，累计 21 条；把 `GD_ASSERT.expect_tests(...)` 改成 21）：
 
 ```js
 GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
@@ -2732,7 +2852,7 @@ window.GD_Replay = (function () {
 
 - [ ] **Step 5: 跑测试确认通过**
 
-预期：`pass: 20, fail: 0, registered: 20, runErrors: []`，T3 显示通关。`loadErrors` 应为 `[]`（replay.js / replay.test.js 至此都已存在）。
+预期：`pass: 21, fail: 0, registered: 21, runErrors: []`，T3 显示通关。`loadErrors` 应为 `[]`（replay.js / replay.test.js 至此都已存在）。
 
 - [ ] **Step 6: Commit**
 
@@ -2826,3 +2946,4 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js level.js && g
 | 17 | **Task 5 代码质量复查（第二阶段）查出关卡不可玩**：`portal_cube`/`speed_1x` 放在 y=1.0，触发框是 `[1, 3.6]`，而玩家贴地时框是 `[0,1]`——`overlap` 用严格不等号，`1 > 1` 不成立，**门永远不触发**。实测贴地跑过 x=253 仍是飞船模式，随后撞死在 x=264 的第一根尖刺；若一直按住飞（出口净空带 y∈[4,9]）则两扇门都错过，以 2x 飞过整个收尾段直接通关 | 一关最花心思的收尾要么撞死要么被白送；Task 12 回放机器人的 `SEGS`（假定 254 起 cube/1x）与实际对不上；Task 13 实玩会撞死在 x=264 | 两扇门改贴地（y=0.5，与 `portal_ship`/`speed_2x` 同一惯例），触发窗口 y∈(-0.5, 3.1)，松手落地的玩家必然命中。**残留缺口**：玩家在出口一直按住（y>3.1）仍会错过——Task 7 把 `portal_cube` 的触发框扩到通高时一并关掉。L3 里补了回归断言（贴地跑过门必须切成 cube 且降回 1x） |
 | 18 | `tests/assert.js` 的 `approx()`/`near()` 不拒绝 NaN：`err > tolPct` 对 NaN 恒为 false，**断言假绿**。实测把某段 `speed` 写成 `'2x'` → L2 算出的时长变成 NaN → L2 绿；`GD_Level.validate()` 又放行了这个关卡 → L1 也绿。一条写错的速度键名能同时骗过两条断言 | 数值类断言在最该报警的时候最安静；`validate()` 还漏检 `speed:99`、`from>to` 反向段、对象越过终点（实测 4 个坏关卡全部返回 `[]`），而硬规矩要求"输入校验只放在 `GD_Level.validate()` 这个边界上" | `approx`/`near` 开头加有限性检查（非 number 或非有限值直接抛错）；`validate()` 补 `VALID_SPEEDS` 白名单、`from>=to`、段落首尾相接且从 0 开始、对象不得越过 `endBlock` 四类检查；`expect_tests` 的门禁提示语按"少注册/多注册"分开说（原来一律说"有用例文件抛异常"，注册数**多于** N 时是误导） |
 | 19 | 文档与关卡实况脱节三处：①"段落边界与传送门 x 坐标严格相等（118 与 254）"是**错的**——传送门在玩家前沿（x+0.5）碰到门时才生效，实际切换点是 ≈111.5/115.5/252.5/253.5，与段落断点差 0.5 格；②计划的 Task 12 `replay.js` 代码块里障碍宽度还是 `c54f39d` 降级**之前**的（`[340, 3]`、`jumpOver(82, 3)`、`jumpOver(324, 3)`），照抄就会带着一份与关卡不符的障碍表；③`level.js` 的注释写"飞行 118–250"（段落到 254）、"回方块 254：门与降速同点"（门在 253、速度门在 254，不同点） | 错误断言会顺着 handoff 一路传下去：`tOf()` 按段表积分会整体偏 0.05 秒，后面每个起跳时刻都跟着偏，而这种偏很容易被误读成"关卡太难" | 计划与 handoff 里的措辞改成"段落边界与主题切换点对齐"，并附实际生效点对照表；`replay.js` 的 `tOf()` 改成**从关卡里的速度门推导档位**（不再抄第二份段表），障碍宽度同步成 2；`level.js` 的注释改成真实值。**顺带**：Task 13 原计划的 `git add -A` 与硬规矩"永远不要 `git add -A`"直接冲突，已改成点名 add |
+| 20 | Task 8 动手时发现三处计划与实测对不上：①计划原版的 **T6b** 跑满 `240*60` 步之后取 `st.x` 并断 `near(st.x, 0, 12)`，实测那个取样点落在**死亡延时**里（`alive=false`、`deadTimer=0.45`、`x=13.76145`=第一根尖刺的死亡点），断言必然红——而计划把它解释成"`respawn()` 漏了某个字段"，方向就错了；②handoff 缺陷清单第 5 条说方块落地判定的 `vy <= 0` "去掉它 13 条断言全绿"，实测去掉之后玩家**照样死**（死在柱顶那一格），只是死之前被吸到了方块顶上——所以"必须死"这条断言抓不住这个变异，必须同时钉住"没被吸到顶上"；③`collide` 的玩家框每轮重算之后**没有任何一条断言能把它跑红** | ①照抄计划会把一个**取样时机**问题误当成 `respawn()` 的实现缺陷去"修"，改坏真正的重开逻辑；②只断"死了"的话，去掉 `vy<=0` 这个变异照样全绿，第 5 条缺陷等于没修；③修复失去保护，将来有人把玩家框改回"进循环前算一次"，没有任何测试会红 | ①T6b 改成"每次重开当刻取样"，并逐字段体检（x/y/vy/rot/percent/time/deadTimer/alive/finished/onGround/mode/speedKey/used），断言反而更严（x 精确为 0）；②补 T5d：玩家上升中撞进 2 格柱必须死，**且** y 保持撞上去那一刻的值、vy 仍为正（落地分支一旦触发会把 vy 清零）——实测去掉 `vy<=0` 后 y 从 0.9407 变成 1.0、vy 从 9.52 变成 0，T5d 变红；③如实记为残留缺口：当前关卡与任何合理关卡都观察不到过期玩家框（落地吸附只抬 0.33 格，而尖刺框高 0.55，要看出差别必须造一个"尖刺嵌在方块格里"的关卡），保护网只有可通性扫描、通关序列与 55700 帧逐帧对拍 |

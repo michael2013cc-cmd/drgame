@@ -576,3 +576,110 @@ GD_ASSERT.test('T4c 传送门切换模式', function () {
     '按住不放时飞船段内爬到的高度必须仍在门框内，实测 ' + maxY.toFixed(2) +
     '（门框上沿 ' + (cubeGate.y + C.HIT.GATE_H).toFixed(1) + '）');
 });
+
+GD_ASSERT.test('T6 随机输入 3000 步无异常无 NaN', function () {
+  var seed = 12345;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  for (var i = 0; i < 3000; i++) {
+    GD_Physics.step(st, rnd() < 0.35);
+    if (!isFinite(st.x) || !isFinite(st.y) || !isFinite(st.vy)) {
+      throw new Error('NaN/Inf @step ' + i + ' x=' + st.x + ' y=' + st.y + ' vy=' + st.vy);
+    }
+    if (st.y < -0.001) throw new Error('穿地 @step ' + i + ' y=' + st.y);
+    if (st.percent < 0 || st.percent > 100) throw new Error('percent 越界: ' + st.percent);
+  }
+  GD_ASSERT.ok(true);
+});
+
+GD_ASSERT.test('T6b 死亡重开 20 次状态干净', function () {
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  var seg0 = st.level.segments[0];
+  // 一直不按必然撞刺；撞死后 DEATH_DELAY 步就自动重开一次（实测一个循环 558 步）。
+  // 断言必须在**刚重开**的那一刻取状态：死亡延时期间 st.x 还停在死亡点。
+  // 计划原版在固定 14400 步之后取样，而那个窗口实测正好落在死亡延时里
+  // （alive=false、deadTimer=0.45、x=13.76145=死亡点），于是 near(st.x, 0, 12) 必然红——
+  // 那不是 respawn() 漏字段，是取样时机不对（逐字段体检见下：刚重开时状态全干净）。
+  // 改成按重开次数取样，断言反而更严：每次重开的当刻都要逐字段干净。
+  var respawns = 0, steps = 0, guard = 240 * 60 * 3, dirty = [];
+  while (respawns < 20 && steps < guard) {
+    var before = st.attempt;
+    while (st.attempt === before && steps < guard) { GD_Physics.step(st, false); steps++; }
+    if (st.attempt === before) break;              // 没等到重开：不该发生，报在下面
+    respawns++;
+    // 逐字段对照 create()：重开后的状态必须干净（漏清一个字段就记下来）
+    var bad = [];
+    if (st.x !== 0) bad.push('x=' + st.x);
+    if (st.y !== 0) bad.push('y=' + st.y);
+    if (st.vy !== 0) bad.push('vy=' + st.vy);
+    if (st.rot !== 0) bad.push('rot=' + st.rot);
+    if (st.percent !== 0) bad.push('percent=' + st.percent);
+    if (st.time !== 0) bad.push('time=' + st.time);
+    if (st.deadTimer !== 0) bad.push('deadTimer=' + st.deadTimer);
+    if (!st.alive) bad.push('alive=false');
+    if (st.finished) bad.push('finished=true');
+    if (!st.onGround) bad.push('onGround=false');
+    if (st.mode !== seg0.mode) bad.push('mode=' + st.mode);
+    if (st.speedKey !== seg0.speed) bad.push('speedKey=' + st.speedKey);
+    if (Object.keys(st.used).length !== 0) bad.push('used=' + Object.keys(st.used).length);
+    if (bad.length) dirty.push('第 ' + respawns + ' 次重开: ' + bad.join(','));
+  }
+  GD_ASSERT.ok(respawns >= 20, '应至少重开 20 次，实得 ' + respawns + ' 次（' + steps + ' 步）');
+  GD_ASSERT.ok(st.attempt >= 21, 'attempt 应随重开累加（起于 1），实为 ' + st.attempt);
+  GD_ASSERT.ok(dirty.length === 0, '重开后状态不干净: ' + dirty.join(' | '));
+});
+
+// spec §5 的架构约束：physics.js 不得引用渲染/输入/音频/HUD。
+// 这条不是洁癖——它保证物理能在 harness.html 里不加载任何渲染代码就被驱动到任意时刻。
+GD_ASSERT.test('D1 physics.js 不依赖渲染层', function () {
+  var src = GD_ASSERT.SOURCES['physics.js'];
+  GD_ASSERT.ok(src !== undefined, '需要 harness 预取的源码字符串');
+  ['GD_Render', 'GD_Hud', 'GD_Audio', 'GD_Input', 'document.', 'window.addEventListener',
+   'requestAnimationFrame', 'canvas'].forEach(function (bad) {
+    GD_ASSERT.ok(src.indexOf(bad) < 0, 'physics.js 不应出现 ' + bad);
+  });
+});
+
+// handoff 缺陷清单第 5 条：方块落地判定里的 `st.vy <= 0` 此前**零覆盖**
+// （实测把它去掉，16 条断言照样全绿）。这个条件是"上升中撞墙 = 死"的唯一保证：
+// 去掉它，玩家上升中撞到方块侧面会被当成落地，吸到方块顶上——撞墙就不算撞墙了。
+// 本用例把这个条件钉住。
+// （注意：本用例的场景里玩家**照样会死**，只是死之前被吸到了柱顶——
+// 所以光断"死了"抓不住这个变异，必须连位置与 vy 一起断，见下面的注释。）
+GD_ASSERT.test('T5d 上升中撞墙应致死（落地判定的 vy<=0 护栏）', function () {
+  var C = GD_Physics.CONST, dt = C.DT;
+  // 场景：玩家在 2 格柱旁**上升中**撞进柱子（x=6 的 y=0 与 y=1 两格）。
+  // 起点取 y=0.9：正好落在"落地吸附容差"之内（top-0.33=0.67 < 0.9），
+  // 所以只要落地判定里的 vy<=0 被去掉，玩家就会被吸到柱顶（y=1）而不是撞死。
+  // 正确实现下玩家是**撞死**的：缩小核心框（0.3×0.3，中心在玩家腰高 1.4）
+  // 与柱顶那一格的核心框（中心 1.5）重叠 → 死。
+  function riseInto(objs) {
+    var st = GD_Physics.create(LV(objs));
+    st.x = 6.5; st.y = 0.9; st.vy = 10; st.onGround = false;
+    GD_Physics.step(st, false);
+    return st;
+  }
+  var hit = riseInto([{ x: 6, y: 0, t: 'block' }, { x: 6, y: 1, t: 'block' }]);
+  GD_ASSERT.ok(!hit.alive, '上升中撞进方块必须死亡，实得 alive=' + hit.alive + ' y=' + hit.y);
+  // 关键在"没被吸到方块顶上"：落地分支一旦触发，st.y 会被改成 top(=1) 且 vy 清零。
+  // 只断"死了"抓不住这个变异——去掉 vy<=0 之后玩家**照样死**（死在柱顶那一格），
+  // 区别只在死之前被吸到了 y=1、vy=0。所以位置与 vy 必须一起钉。
+  GD_ASSERT.near(hit.y, 0.9 + 10 * dt - 0.5 * C.G * dt * dt, 1e-9,
+    '撞死时的 y 应保持撞上去那一刻的值（没被吸到柱顶 1），实为 ' + hit.y);
+  GD_ASSERT.ok(hit.vy > 0, '撞死时 vy 仍应为正（落地分支会把 vy 清零），实为 ' + hit.vy);
+  // 对照组：同样的起点，关卡里没有方块 → 不该死，而且要继续上升。
+  var ctl = riseInto([]);
+  GD_ASSERT.ok(ctl.alive, '没有方块时不该死');
+  GD_ASSERT.ok(ctl.y > 0.9, '没有方块时应继续上升，实得 y=' + ctl.y);
+
+  // 反面：下落中踩到方块顶必须仍然是"落地"（不是撞墙）。
+  // 玩家从 y=1.2、vy=-8 落到 1 格方块顶上：脚越过顶面之后落地分支接管，
+  // st.y 被吸到 1、vy 清零、onGround 变真。
+  var fall = GD_Physics.create(LV([{ x: 6, y: 0, t: 'block' }]));
+  fall.x = 6.5; fall.y = 1.2; fall.vy = -8; fall.onGround = false;
+  var n = 0;
+  while (!fall.onGround && n++ < 240) GD_Physics.step(fall, false);
+  GD_ASSERT.ok(fall.alive, '下落中踩到方块顶不该死');
+  GD_ASSERT.near(fall.y, 1, 1e-9, '应被吸到方块顶 y=1，实为 ' + fall.y);
+  GD_ASSERT.near(fall.vy, 0, 1e-9, '落地后 vy 应为 0，实为 ' + fall.vy);
+});

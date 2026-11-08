@@ -17,7 +17,7 @@
 ```
 ✅ 物理模拟 + 碰撞判定 + 死亡重开     physics.js
 ✅ 关卡数据 Crossbeat + 数据校验      level.js
-✅ 浏览器测试套件（11 条全绿）        tests/
+✅ 浏览器测试套件（20 条全绿）        tests/
 ❌ 画面 / 声音 / 可玩页面             render.js · hud.js · audio.js · index.html（尚未实现）
 ```
 
@@ -36,7 +36,7 @@ http://127.0.0.1:8765/tests/harness.html
 
 ```js
 window.__RESULTS__
-// 期望：{ pass: 11, fail: 0, registered: 11, runErrors: [] }
+// 期望：{ pass: 20, fail: 0, registered: 20, runErrors: [] }
 ```
 
 `registered` 是**注册数门禁**——测试文件如果在注册期抛异常会静默丢掉后面的用例而 `fail` 仍是 0，所以必须核对注册条数。`loadErrors` 里剩 `replay.js` / `replay.test.js` 两条 404 是**预期的前向引用**（Task 12 才实现），不是故障。
@@ -49,9 +49,9 @@ window.__RESULTS__
 physics.js            唯一状态持有者。定步长 1/240 s 的 velocity-Verlet，GD 2.2 常数
 level.js              Crossbeat 关卡数据 + validate()（纯数据，不含逻辑）
 tests/harness.html    测试入口；注册数门禁、错误分桶（load vs run）
-tests/assert.js       断言库（approx 是相对容差，且拒绝 expected===0）
-tests/physics.test.js T1/T2/T5 + L1/L2/L3 共 11 条
-tests/smoke.test.js   脚手架自检
+tests/assert.js       断言库（approx 是相对容差，且拒绝 expected===0）+ 源码预取（D1 要读源码文本）
+tests/physics.test.js T1–T6 + L/P 系列共 18 条
+tests/smoke.test.js   脚手架自检（2 条）
 docs/superpowers/HANDOFF-2026-11-08.md      ← 接手的人先读这个
 docs/superpowers/plans/…-geometry-dash-clone.md   13 任务实现计划 + 缺陷台账
 docs/superpowers/specs/…-design.md          设计依据（常数出处、验收标准、诚实清单）
@@ -94,7 +94,7 @@ git clone https://github.com/michael2013cc-cmd/drgame.git && cd drgame
 
 ## 已知不确定的地方
 
-原版有些数值根本没有权威来源（尖刺致死框 0.55 格、地面线离底 2.2 格、视差系数、可见区 8 格高等），是我的判断，实玩后可能要调——逐条列在 spec 第 13 节「未证实项 / 自调参项（诚实清单）」。已发现但有意延后的缺陷列在计划的「自查记录」表（16 条，每条都带实测数字和后果）。
+原版有些数值根本没有权威来源（尖刺致死框 0.55 格、地面线离底 2.2 格、视差系数、可见区 8 格高等），是我的判断，实玩后可能要调——逐条列在 spec 第 13 节「未证实项 / 自调参项（诚实清单）」。已发现但有意延后的缺陷列在计划的「自查记录」表（20 条，每条都带实测数字和后果）。
 
 ## 许可
 

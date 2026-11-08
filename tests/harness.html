@@ -31,11 +31,24 @@
 <script>
   // 每加一个任务就把这个数字改成"到本任务为止应有的用例总数"（计划里每个任务的
   // Step 4 都写了预期 pass 数）。数字对不上 = 有用例文件抛异常或没注册上。
-  GD_ASSERT.expect_tests(16);
-  var res = GD_ASSERT.run();
-  res.loadErrors = window.__LOAD_ERRORS__ || [];
-  res.runErrors = window.__RUN_ERRORS__ || [];
-  document.getElementById('out').textContent = JSON.stringify(res, null, 1);
+  //
+  // Task 8 起 run() 之前要等源码预取完成（D1 要读 physics.js 的源码文本），
+  // 所以门禁数字挪进轮询循环里、**run() 的上面那一行**——顺序反了门禁就形同虚设。
+  // waited > 40 是兜底：预取没凑齐 6 个键时（静态服务器不可达）也照常跑，
+  // 这时 D1 会自己报"需要 harness 预取的源码字符串"，不会把整个页面卡死。
+  var waited = 0;
+  (function wait() {
+    if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
+      GD_ASSERT.expect_tests(20);
+      var res = GD_ASSERT.run();
+      res.loadErrors = window.__LOAD_ERRORS__ || [];
+      res.runErrors = window.__RUN_ERRORS__ || [];
+      res.sources = Object.keys(GD_ASSERT.SOURCES);
+      document.getElementById('out').textContent = JSON.stringify(res, null, 1);
+      return;
+    }
+    waited++; setTimeout(wait, 25);
+  })();
 </script>
 </body>
 </html>
