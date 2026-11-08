@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crossbeat</title>
+<style>
+  html,body{margin:0;height:100%;background:#04121f;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;
+       font:12px monospace;color:#6b8ba8}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none}
+  #hint{position:fixed;bottom:6px;left:50%;transform:translateX(-50%)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">空格 / 点击 = 跳。按住 = 飞船上升</div>
+<script src="level.js"></script>
+<script src="physics.js"></script>
+<script src="render.js"></script>
+<script src="hud.js"></script>
+<script src="input.js"></script>
+<script src="audio.js"></script>
+<script src="main.js"></script>
+<script>GD_Main.install(document.getElementById('c'));</script>
+</body>
+</html>

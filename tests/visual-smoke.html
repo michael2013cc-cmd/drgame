@@ -27,7 +27,7 @@
 -->
 <style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh}</style>
 </head><body><canvas id="c"></canvas>
-<script src="../level.js"></script><script src="../physics.js"></script><script src="../render.js"></script>
+<script src="../level.js"></script><script src="../physics.js"></script><script src="../render.js"></script><script src="../hud.js"></script>
 <!-- 通关按键序列：已验证能把整关打通（docs/superpowers/research/t12-replay-fixture.js）。
      用它驱动物理，才能走到飞船段和门柱那几扇门前；不驱动就只能停在开头几十格。 -->
 <script src="../docs/superpowers/research/t12-replay-fixture.js"></script>
@@ -45,6 +45,7 @@ if (q.has('x')) {
     if (st.x >= segs[i].from && st.x < segs[i].to) { st.mode = segs[i].mode; st.speedKey = segs[i].speed; }
   }
   GD_Render.draw(r, st, 1 / 60);
+  GD_Hud.draw(r.ctx, st, 60, r.camY);
 } else {
   var tEnd = q.has('t') ? parseFloat(q.get('t')) : 3;
   var seq = GD_Replay.crossbeat, si = 0, held = false;
@@ -52,6 +53,7 @@ if (q.has('x')) {
     while (si < seq.length && seq[si].t <= st.time) { held = seq[si].d; si++; }
     GD_Physics.step(st, held);
     GD_Render.draw(r, st, 1 / 60);
+    GD_Hud.draw(r.ctx, st, 60, r.camY);
   }
 }
 </script></body></html>

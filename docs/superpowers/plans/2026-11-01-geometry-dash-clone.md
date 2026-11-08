@@ -2698,19 +2698,28 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add level.js tests/physics.t
 
 ```js
 window.GD_Hud = (function () {
-  var LW = 427, LH = 240;
+  var LW = 427, LH = 240, BLK = 30;
+  // 地面线的屏幕高度，与 render.js 的 GROUND_Y 同一个式子（240 - 2.2*30 = 174）。
+  // 这里不直接读 GD_Render.GROUND_Y：hud.js 要能脱离 render.js 单独加载
+  // （harness 与静态校验里都不保证 render.js 先于 hud.js 执行）。
+  var GROUND_Y = LH - 2.2 * BLK;
 
-  function draw(ctx, st, fps) {
+  // camY = 纵向相机已经上滚了多少格，由调用方传渲染实例的 r.camY（默认 0 表示相机在原点）。
+  // 默认 0 是为了能单独画；但**传渲染句柄 r 进来时别忘了一起传 r.camY**，否则相机会被当成 0。
+  function draw(ctx, st, fps, camY) {
+    camY = camY || 0;
     ctx = ctx.ctx !== undefined ? ctx.ctx : ctx;      // 兼容传 render 句柄
     ctx.font = '8px monospace';
     ctx.fillStyle = 'rgba(255,255,255,.75)';
-    ctx.fillText(Math.round(fps) + ' FPS', 3, 10);
+    ctx.fillText(Math.round(fps) + ' FPS', 3, 10);   // FPS 是屏幕固定的，不跟世界走
 
-    // Attempt 跟随世界滚动
+    // Attempt 跟随世界滚动。y 也必须过相机（即 render.js 的 wy(3)）：
+    // 只按屏幕坐标钉死的话，飞船把相机拉高之后这行字会留在半空、和世界脱节。
     var ax = (2 - st.x) * 30 + 213;
-    if (ax > -80 && ax < LW) ctx.fillText('Attempt ' + st.attempt, ax, 170 - 3 * 30);
+    var ay = GROUND_Y - (3 - camY) * BLK;
+    if (ax > -80 && ax < LW) ctx.fillText('Attempt ' + st.attempt, ax, ay);
 
-    // 进度条
+    // 进度条是屏幕固定的，所以不过相机
     var bw = 340, bx = (LW - bw) / 2, by = LH - 14;
     ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(bx, by, bw, 7);
     ctx.fillStyle = '#4cd137'; ctx.fillRect(bx, by, bw * st.percent / 100, 7);
@@ -2734,7 +2743,7 @@ window.GD_Hud = (function () {
 
 - [ ] **Step 2: 在 visual-smoke.html 里加上 hud.js 并截图核对**
 
-`navigate_page` 重新加载后 `take_screenshot`。必须看到左上角 FPS、底部居中进度条带百分比数字、开局处 "Attempt 1"。
+`navigate_page` 重新加载后 `take_screenshot`。必须看到左上角 FPS、底部居中进度条带百分比数字、开局处 "Attempt 1"（世界坐标锚定，镜头抬高时会滚出画面——这是对的）。
 
 - [ ] **Step 3: Commit**
 
@@ -2776,17 +2785,50 @@ window.GD_Input = (function () {
 
 - [ ] **Step 2: 写 audio.js**
 
-154 BPM，底鼓 + 军鼓 + 闭镲 + 贝斯，四小节循环。全部振荡器合成，不加载音频文件。
+154 BPM，底鼓 + 军鼓 + 闭镲 + 贝斯，四小节循环 + 飞船舱段移调 + 首次手势后 resume。全部振荡器合成，不加载音频文件。
 
 ```js
 window.GD_Audio = (function () {
   var BPM = 154, SPB = 60 / BPM;      // 0.3896 s，等于一次跳跃的滞空
   var ctx = null, started = false, nextNote = 0, step16 = 0, timer = null;
 
-  var KICK = [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,1,0];
-  var SNARE = [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1];
-  var HAT = [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1];
-  var BASS = [55,0,0,55, 0,49,0,0, 43,0,0,43, 0,41,0,0];   // A1/F1/G1 附近
+  // spec §9：四小节（64 个 16 分音符）一循环。四小节不能一模一样，否则循环会显得机械；
+  // 但每拍的底鼓/军鼓落点保持不动，玩家才踩得住拍子。第 3 小节底鼓加密、第 4 小节军鼓加花。
+  var KICK = [].concat(
+    [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,1,0],
+    [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,1,0],
+    [1,0,0,0, 1,0,1,0, 1,0,1,0, 1,0,1,0],
+    [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,1,0]
+  );
+  var SNARE = [].concat(
+    [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
+    [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
+    [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
+    [0,0,0,0, 1,0,0,0, 0,0,1,0, 1,0,1,1]
+  );
+  var HAT = [].concat(
+    [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1],
+    [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1],
+    [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1],
+    [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1]
+  );
+  var BASS = [].concat(
+    [55,0,0,55, 0,49,0,0, 43,0,0,43, 0,41,0,0],   // A1→G1→F1→E1 下行
+    [55,0,0,55, 0,49,0,0, 43,0,0,43, 0,41,0,0],
+    [55,0,55,0, 0,49,0,49, 43,0,43,0, 0,41,0,41], // 第 3 小节：贝斯跟着加密
+    [41,0,0,43, 0,49,0,0, 55,0,0,55, 0,49,0,0]    // 第 4 小节：走回主音
+  );
+
+  // spec §9 的"段落切换移调"：violet（飞船段）整体 +5 个半音，比方块段更紧张。
+  // +5 是自选音程——spec 只要求"移调"、没给音程，改 MOOD_SEMIS 即可换。
+  // 音频层不 import 关卡数据，所以调性由 main.js 用 setMood(theme) 告知。
+  // 移调只作用于贝斯：鼓点是噪声/低频冲击，移调会削弱冲击力。
+  // 换段时立即换调，已经预排进 WebAudio 的 1–2 个 16 分音符仍用旧调——
+  // 听感是过门处换调，允许；不为此加"下一小节再换"的复杂度。
+  var MOOD_SEMIS = { blue: 0, violet: 5 };
+  var semis = 0;
+  function setMood(theme) { semis = MOOD_SEMIS[theme] || 0; }
+  function bassFreq(f) { return f * Math.pow(2, semis / 12); }
 
   function env(node, t, dur, peak) {
     var g = ctx.createGain();
@@ -2813,12 +2855,12 @@ window.GD_Audio = (function () {
 
   function schedule() {
     while (nextNote < ctx.currentTime + 0.15) {
-      var i = step16 % 16, t = nextNote;
+      var i = step16 % 64, t = nextNote;
       if (KICK[i]) hit(t, 120, 0.13, 0.55);
       if (SNARE[i]) noise(t, 0.11, 0.22);
       if (HAT[i]) noise(t, 0.03, i % 2 ? 0.05 : 0.09);
       if (BASS[i]) {
-        var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(BASS[i], t);
+        var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(bassFreq(BASS[i]), t);
         var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
         o.connect(lp); env(lp, t, SPB * 0.45, 0.16); o.start(t); o.stop(t + SPB * 0.5);
       }
@@ -2826,18 +2868,52 @@ window.GD_Audio = (function () {
     }
   }
 
+  function wake() {
+    // 正常路径（main.js 在 input.get() 为真之后才 start）走到这里时 ctx 已经是 running；
+    // 没有手势时 resume() 返回的 Promise 会一直 pending，等第一次点击/按键自己兑现。
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+  }
+
+  // 音频层自己兜住"第一次手势"。main.js 的 input.get() 只有"当前按着"，
+  // 短于一帧的点按会漏掉；一旦漏掉、玩家又不再按，start() 就永远不会被调用——
+  // 失败模式是整局没有音乐，不是"晚一点有音乐"。所以监听在脚本加载时就挂上。
+  function firstGesture() {
+    if (!started) start(); else wake();
+  }
+  var armed = false;
+  function arm() {
+    if (armed) return;
+    armed = true;
+    window.addEventListener('pointerdown', firstGesture, { once: true });
+    window.addEventListener('keydown', firstGesture, { once: true });
+  }
+  function disarm() {
+    if (!armed) return;
+    armed = false;
+    window.removeEventListener('pointerdown', firstGesture);
+    window.removeEventListener('keydown', firstGesture);
+  }
+
   function start() {
     if (started) return;
     try {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
-      nextNote = ctx.currentTime + 0.05;
-      timer = setInterval(schedule, 25);
-      started = true;
-    } catch (e) { started = false; }   // 失败则静音继续，不阻塞游戏（spec §11.1）
+    } catch (e) { return; }   // 失败则静音继续，不阻塞游戏（spec §11.1）
+    nextNote = ctx.currentTime + 0.05;
+    timer = setInterval(schedule, 25);
+    started = true;
+    wake();
+    arm();      // stop() 之后重新 start 时把兜底监听补回来
   }
-  function stop() { if (timer) clearInterval(timer); if (ctx) ctx.close(); started = false; ctx = null; }
+  function stop() {
+    if (timer) clearInterval(timer);
+    if (ctx) ctx.close();
+    started = false; ctx = null;
+    disarm();   // 别让反复 start/stop 攒下空监听
+  }
 
-  return { start: start, stop: stop, SPB: SPB, isOn: function () { return started; } };
+  arm();        // 页面一加载就武装第一次手势，不依赖 main.js 是否调用 start()
+  return { start: start, stop: stop, setMood: setMood, SPB: SPB, isOn: function () { return started; } };
 })();
 ```
 
@@ -2853,6 +2929,7 @@ window.GD_Main = (function () {
     var st = GD_Physics.create(GD_Level.crossbeat);
     var input = GD_Input.create(canvas);
     var acc = 0, last = performance.now(), fps = 60, fpsAcc = 0, fpsN = 0, booted = false;
+    var segIdx = -1;                    // 当前段落号；换段时把调性告诉音频层（spec §9）
 
     function frame(now) {
       var raw = (now - last) / 1000; last = now;
@@ -2863,9 +2940,17 @@ window.GD_Main = (function () {
       var steps = 0;
       while (acc >= DT && steps < Math.round(MAX_FRAME / DT)) { GD_Physics.step(st, input.get()); acc -= DT; steps++; }
       if (steps === Math.round(MAX_FRAME / DT)) acc = 0;      // 抛掉追不上的积压
-      GD_Render.draw(r, st, dt);
-      GD_Hud.draw(r.ctx, st, fps);
-      if (!booted && (st.x > 0 || !st.alive)) { GD_Audio.start(); booted = true; }
+
+      // 音乐调性跟关卡段落走：段落有自己的 theme，音频层不认识关卡数据，所以由这里告知。
+      var segs = st.level.segments, si = 0;
+      while (si < segs.length && !(st.x >= segs[si].from && st.x < segs[si].to)) si++;
+      if (si !== segIdx) { segIdx = si; GD_Audio.setMood(segs[si] && segs[si].theme); }
+
+      GD_Render.draw(r, st, dt);                         // dt 要用渲染帧的真实秒数，粒子才按真实速度渐隐
+      GD_Hud.draw(r.ctx, st, fps, r.camY);               // camY 让 HUD 里跟着世界走的部分过相机
+      // 音频必须由用户手势触发：浏览器只允许在手势之后让 AudioContext 跑起来。
+      // 不能用 st.x>0——方块模式开局第一帧 x 就 >0，等于没有手势就建 ctx，整局静音。
+      if (!booted && input.get()) { GD_Audio.start(); booted = true; }
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
