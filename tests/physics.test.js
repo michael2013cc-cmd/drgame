@@ -235,3 +235,169 @@ GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍�
   GD_ASSERT.ok(g2.speedKey === 1,
     '贴地跑过降速门后应回到 1x，实为 ' + g2.speedKey);
 });
+
+// P1/P2 复用上面 LV 助手（与文件里其它用例保持一致：关卡带非空 segments）。
+GD_ASSERT.test('P1 跳板/跳环可达高度符合 spec §4.3', function () {
+  var C = GD_Physics.CONST;
+  // 常量先钉死。下面的高度是从 CONST 推出来的：CONST 漂了，高度断言会跟着漂，
+  // 两边一起漂就没人发现了。所以"常量断言"和"高度指纹"分工不同，两个都要有——
+  // 常量断言保证推的原料是 spec §4.3 的数，指纹保证物理实现本身是精确的。
+  GD_ASSERT.near(C.PAD.pad_pink, 21.08, 0.001, 'spec §4.3 粉跳板速度');
+  GD_ASSERT.near(C.PAD.pad_yellow, 32.28, 0.001, 'spec §4.3 黄跳板速度');
+  GD_ASSERT.near(C.RING.ring_pink, 15.78, 0.001, 'spec §4.3 粉环速度');
+  GD_ASSERT.near(C.RING.ring_yellow, 23.40, 0.001, 'spec §4.3 黄环速度');
+  // 命中框尺寸同样是行为依据（板厚 0.35 格；环框 [o.x-0.6, o.x+1.6] × [o.y-0.6, o.y+1.6]），
+  // 计划正文按这些数字推理过触发行为，改了它们却没有断言会红，一并钉住。
+  GD_ASSERT.near(C.HIT.PAD_H, 0.35, 0.001, '跳板顶面厚度');
+  GD_ASSERT.near(C.HIT.RING_X0, -0.6, 0.001, '跳环触发框左边界');
+  GD_ASSERT.near(C.HIT.RING_X1, 1.6, 0.001, '跳环触发框右边界');
+  GD_ASSERT.near(C.HIT.RING_Y0, -0.6, 0.001, '跳环触发框下边界');
+  GD_ASSERT.near(C.HIT.RING_Y1, 1.6, 0.001, '跳环触发框上边界');
+
+  // 跳板：贴地跑过去，接触即触发（不用按键）。
+  function padApex(obj) {
+    var st = GD_Physics.create(LV([obj]));
+    var apex = 0, trigY = null, guard = 0;
+    // 先跑到 obj.x - 0.2 格：玩家前沿是 x+0.5，跳板在 x+0.5 > obj.x 的那一步
+    // （实测 x=4.5006）就弹射了，这一段留在第一阶段，弹射后的顶点由第二阶段记。
+    while (st.x < obj.x - 0.2 && guard++ < 240 * 10) {
+      var vyB = st.vy;
+      GD_Physics.step(st, false);
+      if (trigY === null && Math.abs(st.vy - C.PAD[obj.t]) < 1e-6) trigY = st.y;
+    }
+    var g2 = 0;
+    while (st.alive && g2++ < 240 * 3) {
+      GD_Physics.step(st, false);
+      if (st.y > apex) apex = st.y;
+      // 24 步 = 0.1 秒的稳定窗口：弹射后玩家至少飞 44 步（0.18 秒）才可能再落地，
+      // 所以头 24 步里的 onGround=true 不能当作"结束"（否则会记到还没弹出去的高度）。
+      if (st.onGround && g2 > 24) break;
+    }
+    return { apex: apex, trigY: trigY };
+  }
+
+  // 跳环：要在**环心高度**上按住才触发。
+  function ringApex(obj) {
+    var st = GD_Physics.create(LV([obj]));
+    var guard = 0;
+    while (st.x < obj.x - 0.2 && guard++ < 240 * 10) GD_Physics.step(st, false);
+    // 环的触发框是 [o.y-0.6, o.y+1.6]（2.2 格高），玩家只有 1 格高：
+    // 从地面起跳时脚边在 y≈0.83 就先碰到框的下沿，那一次的触发高度跟环心无关，
+    // 测出来的顶点自然不是「环心 + 可达高度」。所以瞬移到环心高度（vy=0，正在下落）再按，
+    // 触发点才落在环心上（实测 y=2.399，比环心低的那 0.001 格是放置后那一步的自由落体）。
+    st.y = obj.y; st.vy = 0; st.onGround = false;
+    var apex = 0, trigY = null, g2 = 0;
+    while (st.alive && g2++ < 240 * 3) {
+      var vyB = st.vy;
+      GD_Physics.step(st, true);
+      if (trigY === null && Math.abs(st.vy - C.RING[obj.t]) < 1e-6) trigY = st.y;
+      if (st.y > apex) apex = st.y;
+      if (st.onGround && g2 > 24) break;
+    }
+    return { apex: apex, trigY: trigY };
+  }
+
+  // spec §4.3：可达高度 h = v²/(2g)。表里的值（粉跳板 1.933、粉环 1.083、黄环 2.383）
+  // 是解析值取整；环的高度用 obj.y（这枚环自己的 y）而不是写死的 2.4，
+  // 将来把环挪到别的 y，期望值会跟着走，不会悄悄过期。
+  var pad = { x: 5, y: 0, t: 'pad_pink' };
+  var p = padApex(pad);
+  GD_ASSERT.ok(p.trigY !== null, '粉跳板应当触发过');
+  GD_ASSERT.approx(p.apex, 1.933, 0.005, '粉跳板高度');
+  // 指纹：弹射点到顶点的抬升必须正好是 v²/(2g)（跳板的弹射点就是地面，trigY=0）。
+  GD_ASSERT.near(p.apex - p.trigY,
+    C.PAD.pad_pink * C.PAD.pad_pink / (2 * C.G), 0.002, '粉跳板高度指纹');
+
+  var ringP = { x: 5, y: 2.4, t: 'ring_pink' };
+  var rp = ringApex(ringP);
+  GD_ASSERT.ok(rp.trigY !== null, '粉环应当触发过');
+  GD_ASSERT.approx(rp.apex, 1.083 + ringP.y, 0.005, '粉环相对高度');
+  GD_ASSERT.near(rp.apex - rp.trigY,
+    C.RING.ring_pink * C.RING.ring_pink / (2 * C.G), 0.002, '粉环高度指纹');
+
+  var ringY = { x: 5, y: 2.4, t: 'ring_yellow' };
+  var ry = ringApex(ringY);
+  GD_ASSERT.ok(ry.trigY !== null, '黄环应当触发过');
+  GD_ASSERT.approx(ry.apex, 2.383 + ringY.y, 0.005, '黄环相对高度');
+  GD_ASSERT.near(ry.apex - ry.trigY,
+    C.RING.ring_yellow * C.RING.ring_yellow / (2 * C.G), 0.002, '黄环高度指纹');
+
+  // 跳板的三种"接触"现状，显式钉住。
+  // spec §4.3 写的是"跳板为接触即触发"，现在的实现是"一次接触只给一次冲量"，
+  // 方向由 vy<=0 定：贴地跑过会弹、从高处砸下来会弹、**上升中掠过不弹**。
+  // 第三条是与 spec §4.3 的一处语义偏离（GD 里跳板是钉在方块底部的实体，
+  // 玩家踩不到板子下面；本项目的跳板是独立的 0.35 格薄片，"从下面穿过"要自己定方向）。
+  // 钉在这里是为了让它显式、可被 review，而不是只活在散文里；改不改留给 Task 13 实玩定夺。
+  function padScenario(withPad, x, y, vy) {
+    var objs = withPad ? [{ x: 5, y: 0, t: 'pad_pink' }] : [];
+    var st = GD_Physics.create(LV(objs));
+    st.x = x; st.y = y; st.vy = vy; st.onGround = false;
+    var apex = 0, fired = false, trigY = null, n = 0;
+    while (n++ < 240) {
+      GD_Physics.step(st, false);
+      if (!fired && Math.abs(st.vy - C.PAD.pad_pink) < 1e-6) { fired = true; trigY = st.y; }
+      if (st.y > apex) apex = st.y;
+    }
+    return { apex: apex, fired: fired, trigY: trigY };
+  }
+  // (1) 贴地跑过跳板 → 弹：就是上面 padApex 那条（顶点 1.932，触发点在地面 y=0）。
+  // (2) 上升中掠过跳板 → 不弹：玩家在 x=4.55、y=0.05、vy=+16，
+  //     脚在板体厚度里（0.05 < 0.35）、正在上升、前沿已经压到板子左边（4.55+0.5=5.05>5），
+  //     三种"接触"条件全满足。旧实现（只按重叠判）这里会弹 3 次，现在 0 次。
+  var rise = padScenario(true, 4.55, 0.05, 16);
+  var riseCtl = padScenario(false, 4.55, 0.05, 16);
+  GD_ASSERT.ok(!rise.fired, '上升中掠过跳板不该触发（spec §4.3 的语义偏离，见注释）');
+  GD_ASSERT.near(rise.apex, riseCtl.apex, 1e-9, '上升中掠过跳板时轨迹与没有跳板时逐帧相同');
+  // (3) 从高处砸到跳板上 → 弹：玩家在 x=5.2、y=1.0、vy=-15，脚落到板体厚度里就弹。
+  //     起点放在 y=1.0 而不是更高，是为了让"下落途中的最高点"不盖过弹射后的顶点。
+  var fall = padScenario(true, 5.2, 1.0, -15);
+  GD_ASSERT.ok(fall.fired, '从高处砸到跳板上应当触发');
+  GD_ASSERT.near(fall.apex - fall.trigY,
+    C.PAD.pad_pink * C.PAD.pad_pink / (2 * C.G), 0.002, '砸下来弹射的高度指纹');
+
+  // spec §4.3：跳环需玩家按下触发，跳板为接触即触发。
+  // 同一个位置按一次 vs 不按一次：不按的时候环的速度不会被写进 vy。
+  function ringVy(held) {
+    var st = GD_Physics.create(LV([{ x: 5, y: 2.4, t: 'ring_pink' }]));
+    st.x = 4.8; st.y = 2.4; st.vy = 0; st.onGround = false;
+    GD_Physics.step(st, held);
+    return st.vy;
+  }
+  GD_ASSERT.near(ringVy(true), C.RING.ring_pink, 1e-6, '按下时跳环触发');
+  GD_ASSERT.ok(Math.abs(ringVy(false) - C.RING.ring_pink) > 1,
+    '不按的时候跳环不该触发');
+});
+
+GD_ASSERT.test('P2 跳环只能触发一次', function () {
+  var RING = GD_Physics.CONST.RING.ring_pink;
+  var st = GD_Physics.create(LV([{ x: 5, y: 2.4, t: 'ring_pink' }]));
+  var triggers = 0, lastVy = 0;
+  var guard = 0;
+  while (st.x < 4.5 && guard++ < 240 * 10) GD_Physics.step(st, false);
+  for (var i = 0; i < 240; i++) {
+    GD_Physics.step(st, true);
+    // 触发标志 = 环的速度被写进 vy 的那一帧。
+    // 不能拿「vy 突然变大」当标志：长按的普通起跳和落地同样是 vy 猛增
+    // （实测 240 步里数出 5 次，而且压根数不到环那次——环触发时玩家正在上升，
+    //  环把 vy 从 18.05 压到 15.78，是**变小**）。
+    if (Math.abs(st.vy - RING) < 1e-6) triggers++;
+    lastVy = st.vy;
+  }
+  // 玩家在环的触发框里待了约 50 帧（框宽 2.2 格，@1x 一帧 0.043 格），
+  // 没有一次性标记就会每帧触发一次（实测 49 次）——这条断言是有牙齿的。
+  GD_ASSERT.ok(triggers >= 1,
+    '跳环应当触发过，实测 ' + triggers + ' 次（最后一次 vy=' + lastVy + '，期望 ' + RING + '）');
+  GD_ASSERT.ok(triggers <= 1,
+    '跳环触发 ' + triggers + ' 次，应 ≤ 1（最后一次 vy=' + lastVy + '）');
+
+  // 对照组：同一个 240 步场景、同样一直按住，关卡里**没有环** —— 一次都不该触发。
+  // 有这条才敢说上面那 1 次确实来自环，而不是别的什么往 vy 里写数的路径。
+  var ctl = GD_Physics.create(LV([]));
+  var ctlTriggers = 0, guard2 = 0;
+  while (ctl.x < 4.5 && guard2++ < 240 * 10) GD_Physics.step(ctl, false);
+  for (var j = 0; j < 240; j++) {
+    GD_Physics.step(ctl, true);
+    if (Math.abs(ctl.vy - RING) < 1e-6) ctlTriggers++;
+  }
+  GD_ASSERT.ok(ctlTriggers === 0, '没有环就不该有触发，实测 ' + ctlTriggers + ' 次');
+});

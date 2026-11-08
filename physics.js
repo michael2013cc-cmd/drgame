@@ -195,7 +195,16 @@ window.GD_Physics = (function () {
           if (overlap(core, solid)) { die(st); return; }
         }
       } else if (o.t === 'pad_pink' || o.t === 'pad_yellow') {
-        if (overlap(pb, { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + CONST.HIT.PAD_H })) {
+        // 一次接触只给一次冲量：vy<=0 才触发。
+        // 只按"重叠"判时，弹射之后玩家的脚还留在 0.35 厚的板体里好几帧
+        // （实测 y 从 0 涨到 0.347 共 5 帧），每帧都被重置回 21.08，
+        // 等于从板体上沿 y≈0.347 起跳，顶点变成 2.279 而不是 spec §4.3 的 1.933（+17.9%）。
+        // **这是与 spec §4.3「跳板为接触即触发」的一处语义偏离**：上升中掠过跳板不触发。
+        // GD 里跳板是钉在方块底部的实体，玩家踩不到板子下面；本项目的跳板是独立的
+        // 0.35 格薄片，"从下面穿过"这种情形得自己定方向。关卡里两处跳板都在地面上，
+        // 实测不影响可通性；要不要改成真正的"每次接触一次冲量"，留给 Task 13 人工试玩定夺。
+        // 现状由 tests/physics.test.js 的 P1 三条场景断言钉住，spec §13 也有记录。
+        if (overlap(pb, { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + CONST.HIT.PAD_H }) && st.vy <= 0) {
           st.vy = CONST.PAD[o.t]; st.onGround = false;
         }
       } else if (o.t === 'ring_pink' || o.t === 'ring_yellow') {
