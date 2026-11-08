@@ -8,7 +8,7 @@
   实现上是一边跑一边画，不是最后画一帧：拖尾是"每次 draw 播一个粒子、0.5 秒渐隐"的，
   只在最后画一帧的话拖尾只剩 1 个粒子，Step 4 的第 7 项（渐隐拖尾）根本核对不出来。
 
-  看哪一帧（静态服务在 http://127.0.0.1:8765/）：
+  看哪一帧（静态服务在 http://127.0.0.1:8766/）：
     /tests/visual-smoke.html            默认：跑 3 秒真实物理 → 方块段 x≈31（尖刺、拖尾）
     /tests/visual-smoke.html?t=6        跑到第 6 秒 → 方块段 x≈62（方块柱、跳环）
     /tests/visual-smoke.html?t=9        跑到第 9 秒 → 方块段 x≈93
@@ -24,7 +24,7 @@
   渲染层用死区式跟随把玩家拉回来（玩家相对相机保持在 1.0~4.6 格），
   所以飞船段任何一帧都能看见玩家。
   注意：**别用"玩家在屏幕上的位置"去反推它的世界高度**——相机一跟，
-  y=5.18 和 y=14 画出来是一样的（都是贴着画面上沿）。
+  不同的高度（y=5.18 和 y=6.51）画出来是一样的（都是贴着画面上沿）。
 -->
 <style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh}</style>
 </head><body><canvas id="c"></canvas>
@@ -36,7 +36,7 @@
 // ?t=秒：跑到关卡的第几秒（默认 3）；?x=格：直接把玩家放到第几格（不跑物理）
 var q = new URLSearchParams(window.location.search);
 var cv = document.getElementById('c');
-var r = GD_Render.create(cv); GD_Render.resize(cv);
+var r = GD_Render.create(cv); r.resize();
 var st = GD_Physics.create(GD_Level.crossbeat);
 if (q.has('x')) {
   st.x = parseFloat(q.get('x'));
