@@ -176,3 +176,32 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
   GD_ASSERT.near(1 + 12 + fall, analytic, 2, '离地到落地的总滞空步数（解析 ' + analytic + '，实测 32）');
   // 上升段不另开探针：长按连跳那个循环已经在钉 bounced，空中若多发一次起跳计数就会翻。
 });
+
+GD_ASSERT.test('L1 关卡数据自洽', function () {
+  var errs = GD_Level.validate(GD_Level.crossbeat);
+  GD_ASSERT.ok(errs.length === 0, '校验错误: ' + errs.join(' | '));
+});
+
+GD_ASSERT.test('L2 段落时长合计 32.0 秒', function () {
+  var lv = GD_Level.crossbeat, t = 0, S = GD_Physics.CONST.SPEEDS;
+  for (var i = 0; i < lv.segments.length; i++) {
+    var sg = lv.segments[i];
+    t += (sg.to - sg.from) / S[sg.speed];
+  }
+  GD_ASSERT.approx(t, 32.0, 0.02, '总时长秒');
+});
+
+GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
+  var lv = GD_Level.crossbeat, objs = lv.objects, end = lv.meta.endBlock;
+  for (var i = 0; i < objs.length; i++) {
+    GD_ASSERT.ok(objs[i].x >= 0 && objs[i].x <= end, '对象越界: ' + objs[i].t + '@' + objs[i].x);
+  }
+  var hazards = objs.filter(function (o) { return o.t === 'spike'; });
+  for (var a = 0; a < hazards.length; a++) {
+    for (var b = 0; b < hazards.length; b++) {
+      if (a !== b && Math.abs(hazards[a].x - hazards[b].x) < 0.9 && hazards[a].y === hazards[b].y) {
+        throw new Error('尖刺重叠 @' + hazards[a].x);
+      }
+    }
+  }
+});
