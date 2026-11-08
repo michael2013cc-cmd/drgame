@@ -103,7 +103,7 @@ window.GD_Physics = (function () {
     if (st.mode === 'cube') stepCube(st, held, dt);
     else stepShip(st, held, dt);
 
-    collide(st);
+    collide(st, held);
 
     if (st.alive) {
       var end = st.level.meta ? st.level.meta.endBlock : 1000;
@@ -162,7 +162,9 @@ window.GD_Physics = (function () {
     return best;
   }
 
-  function collide(st) {
+  // held 必须传进来：跳环是"按下才触发"的，少了这个形参严格模式下会抛
+  // ReferenceError（实测关卡里只要有 ring，玩家一进其 3 格邻域整个模拟就炸）。
+  function collide(st, held) {
     var list = near(st), pb = playerBox(st), i, o;
 
     for (i = 0; i < list.length; i++) {

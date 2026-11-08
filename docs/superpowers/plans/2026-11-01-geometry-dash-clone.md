@@ -404,7 +404,7 @@ window.GD_Physics = (function () {
     if (st.mode === 'cube') stepCube(st, held, dt);
     else stepShip(st, held, dt);
 
-    collide(st);
+    collide(st, held);
 
     if (st.alive) {
       var end = st.level.meta ? st.level.meta.endBlock : 1000;
@@ -463,7 +463,9 @@ window.GD_Physics = (function () {
     return best;
   }
 
-  function collide(st) {
+  // held 必须传进来：跳环是"按下才触发"的，少了这个形参严格模式下会抛
+  // ReferenceError（实测关卡里只要有 ring，玩家一进其 3 格邻域整个模拟就炸）。
+  function collide(st, held) {
     var list = near(st), pb = playerBox(st), i, o;
 
     for (i = 0; i < list.length; i++) {
@@ -856,6 +858,8 @@ window.GD_Level = (function () {
     for (var i = 0; i < count; i++) a.push({ x: startX + i, y: y || 0, t: 'spike' });
     return a;
   }
+  // cube 段的柱子限高 2 格：单跳顶点 2.17，3 格柱实测 65 个起跳阈值 0 个能通过。
+  // 长按能蹭过去不算合法路线——那是 LAND_TOL 把人吸上墙肩后再起跳的副作用。
   function pillar(x, h) {
     var a = [];
     for (var i = 0; i < h; i++) a.push({ x: x, y: i, t: 'block' });
@@ -876,7 +880,7 @@ window.GD_Level = (function () {
     spikeRun(64, 2),
     { x: 70, y: 0, t: 'pad_pink' },
     spikeRun(74, 1, 0), spikeRun(75, 1, 0),
-    pillar(82, 3),
+    pillar(82, 2),
     { x: 88, y: 2.4, t: 'ring_yellow' },
     spikeRun(94, 2),
     pillar(100, 2),
@@ -918,10 +922,10 @@ window.GD_Level = (function () {
     spikeRun(304, 1), spikeRun(305, 1),
     pillar(312, 2),
     spikeRun(318, 2),
-    pillar(324, 3),
+    pillar(324, 2),
     spikeRun(330, 1),
     { x: 334, y: 2.4, t: 'ring_yellow' },
-    spikeRun(340, 3),
+    spikeRun(340, 2),   // 三连刺打不过：y>=0.55 的窗口只有 3.49 格，三刺要 3.55
     { x: 352, y: 0, t: 'finish' }
   );
 
@@ -1940,3 +1944,4 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c u
 | 13 | T5b 用"距墙一整跳"（`6 - span ≈ 1.93`）起跳 | 人不是跳过墙而是**落在墙上**：下落途中 `LAND_TOL` 先把第 1 格的顶当成可站面把人吸进方块内部，随即被缩小框判死；`trial(2)` 恒红，症状看起来像"跳跃高度不够"会误导去改 `JUMP_V0` | 起跳点改为半跳距 `6 - span/2`，让顶点落在墙前沿；实测可通过区间 x∈[2.5, 5.45]（阈值 1.00→5.95、步长 0.05 扫出，连续无空洞），3.966 在正中。本条原先记的 `[2.5, 4.6]`/`3.97` 是过期读数，已由第 14 条重扫修正 |
 | 14 | Task 4 质量复查：T5a/T5b/T5c 只断"结果"不钉"原因"。T5a 只查 `!alive`（任何误判早死都绿灯）、名字写着"从 0% 重开"却从不看 `percent`、重开等待写死 240 步；T5b 的 `trial()` 只返回 `st.alive`，"跳过 2 格墙"没证明翻过墙、"撞死 3 格墙"没证明死在墙上，注释里的起跳区间还是过期读数；T5c 标题里的"无 coyote time"零覆盖——平地长按那个循环从不离开地面，任何宽限期都照样绿，`bounced >= 2` 低到"只弹两次也算连跳" | 误判早死、重开没回到 0%、判定框改坏、有人加 coyote grace 都不会红；写死 240 步还会在合法微调常数时把正确实现跑红（模拟 `DEATH_DELAY = 0.5` → 120 步就重开，剩下 120 步活跑 x=5.193，`near(st.x, 0, 0.05)` 必红） | T5a 钉住死亡瞬间 x（实测 7.7462：玩家前沿 `st.x+0.5` 首次进入致死框 `x∈[8.225, 8.775]` 的那一步）+ "同关卡去掉尖刺同样步数仍活着"的反证 + 重开后 `percent === 0 && time === 0`，等待步数改成 `round(CONST.DEATH_DELAY / CONST.DT)`（当前 240，等价性不再写进测试体）；T5b `trial()` 改返 `{alive, x, y}`，断 2 格墙 480 步跑到 x=20.77 > 8、3 格墙死在墙柱内（实测 x=6.2316、y=2.1454，落在 x∈(6,7)），注释与第 13 条同步成实测区间；T5c 的 `bounced` 下限收到 6（实测 7）。本条当时给 T5c 补的"真 coyote 探针"其实是拿起跳后按住冒充，测的是"空中不连跳"而不是 coyote 宽限期，它那句"`physics.js` 不需改动、走下台沿不产生空中态"也把缺陷当成了既成事实——由第 15 条推翻并修物理 |
 | 15 | Task 4 质量复查第二轮：走下台沿不掉落是 **`physics.js` 的缺陷**，不是"没法测 coyote"的客观限制。原 `stepCube` 在 `onGround` 且未按时，无条件 `st.y = GROUND_Y(st)`，而 `GROUND_Y` 的支撑窗口是整框重叠（`st.x > o.x + 1.52` 即失效），于是失去支撑那一步把 y 从台面直接拽到地面（实测 x=5.5246 处 1→0、两格台 2→0，`onGround` 全程为真、空中态 0 步） | 原版里走下台阶是掉下去，这里等于"踩空即传送"，Task 5 关卡里任何台沿、Task 12 回放机器人都会被它污染；更要紧的是没有空中态就没有 coyote 的可验对象，第 14 条因此只能用起跳冒充 | `stepCube` 改为支撑面低于脚下时置 `onGround = false`、交给同一步的重力积分做自由落体（`Task 2` Step 3 代码块同步）。实测失去地面那步 `y=0.999, vy=-0.479`（从静止起步，一步重力增量），一格台 31 步、两格台 44 步后落地；T5b 起跳阈值区间在新物理下重扫仍为连续的 `[2.5, 5.45]`、3 格墙 0 个可通过阈值、死点 x=6.2316 未变，注册数与 `pass: 8, fail: 0` 不变。coyote 探针改成真的走台沿：离地后按住 12 步（0.05 s）断 `reJump === 0`，负控在离地后外部把 `vy` 重置回 `JUMP_V0` 得 `reJump: 12`、窗口内 `maxVy: 21.88`（干净跑 `maxVy: -0.958`）。另记一条流程坑：`?v=` 只 bust `harness.html`，**bust 不到 `<script src>` 子资源**——改完 `physics.js` 换新 `?v=` 的页面照旧跑旧物理，必须 `navigate_page {type: "reload", ignoreCache: true}`；「测试执行流程」Step B 已补。复审另提三条 nit：①T5c 原先只钉"离地瞬间"和"12 步后仍在空中"，浮空冻结（`onGround` 假但 `vy` 不再积分）能同时躲过，已补总滞空步数断言，期望值现算 `round(√(2·1/g)/DT)`（=32，实测 1+12+19=32）而不是抄实测；②`portal_cube` 置 `onGround` 不清 `vy` 破坏"在地面 ⇒ `vy==0`"不变式，本条的新分支正依赖它，已并入第 11 条延后清单留给 Task 7；③harness 那 3 条 404 是后续任务的前向引用，不动 |
+| 16 | Task 5 关卡数据落地后做了两件事才敢提交：①带 `ring` 的关卡一进邻域就崩——`collide(st)` 少了 `held` 形参，而跳环是"按下才触发"的，`'use strict'` 里引用未定义形参直接 `ReferenceError`（physics.js 命中环那一步）；②拿穷举起跳阈值的机器人扫全关，发现三处按物理常数根本打不通：`pillar(82,3)`、`pillar(324,3)` 的 3 格柱 tap 可通过阈值 **0/65**，`spikeRun(340,3)` 三连刺要腾空覆盖 3.55 格而实测 `y≥0.55` 的窗口只有 **3.49 格**（tap/hold 都 0）| ①Task 6 一加环整个模拟就炸，而且炸在关卡数据里，症状会误判成"关卡布局有问题"；②关卡号称"人类可通"却有三处死局，Task 12 通关机器人会在第一个 3 格柱就永远过不去，届时容易被误读成"机器人策略不行"而去放宽物理 | ①`collide(st, held)` + 调用点同步（Task 2 Step 3 代码块已镜像）；②两处柱子降为 2 格、三连刺改双连刺，并把各障碍的可通过窗口记进注释：单刺 20/65、双刺 10/65、2 格柱 30/65、环/板/传送门/终点 64–65/65。改完全关 30 个 cube 组 `zeroTapGroups: []`，`pass: 11, fail: 0, registered: 11` 不变。**顺带两条要记住的**：(a) 审计机器人一开始步数上限写死 6000 步，只能跑到 x≈259，于是 x>254 的所有组集体"看起来打不通"——上限必须按关卡长度给（现用 `240*40`）；(b) **新缺陷，留给后续**：3 格柱长按有 10 个阈值能"过"，靠的是 `LAND_TOL` 在下落途中把墙肩（top=2）当成可站面把人吸上去、随即起跳拿到 4.17 的顶点，这不是合法路线，本条按 tap 能否通过来判，`LAND_TOL` 墙肩吸附并入第 11 条延后清单 |

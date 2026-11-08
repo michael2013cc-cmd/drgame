@@ -7,6 +7,8 @@ window.GD_Level = (function () {
     for (var i = 0; i < count; i++) a.push({ x: startX + i, y: y || 0, t: 'spike' });
     return a;
   }
+  // cube 段的柱子限高 2 格：单跳顶点 2.17，3 格柱实测 65 个起跳阈值 0 个能通过。
+  // 长按能蹭过去不算合法路线——那是 LAND_TOL 把人吸上墙肩后再起跳的副作用。
   function pillar(x, h) {
     var a = [];
     for (var i = 0; i < h; i++) a.push({ x: x, y: i, t: 'block' });
@@ -27,7 +29,7 @@ window.GD_Level = (function () {
     spikeRun(64, 2),
     { x: 70, y: 0, t: 'pad_pink' },
     spikeRun(74, 1, 0), spikeRun(75, 1, 0),
-    pillar(82, 3),
+    pillar(82, 2),
     { x: 88, y: 2.4, t: 'ring_yellow' },
     spikeRun(94, 2),
     pillar(100, 2),
@@ -69,10 +71,10 @@ window.GD_Level = (function () {
     spikeRun(304, 1), spikeRun(305, 1),
     pillar(312, 2),
     spikeRun(318, 2),
-    pillar(324, 3),
+    pillar(324, 2),
     spikeRun(330, 1),
     { x: 334, y: 2.4, t: 'ring_yellow' },
-    spikeRun(340, 3),
+    spikeRun(340, 2),   // 三连刺打不过：y>=0.55 的窗口只有 3.49 格，三刺要 3.55
     { x: 352, y: 0, t: 'finish' }
   );
 
