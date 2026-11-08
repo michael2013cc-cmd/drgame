@@ -166,5 +166,13 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
   }
   GD_ASSERT.ok(!cs.onGround, '宽限期窗口内应仍在下落，实得 y=' + cs.y + ' 第 ' + kk + ' 步离地');
   GD_ASSERT.ok(reJump === 0, '离地后长按 0.05 s 不该补到起跳，vy 回升 ' + reJump + ' 次');
+  // 浮空冻结（onGround 假但 vy 不再积分）能同时躲过上面两条，所以把落地也钉住。
+  // 期望步数由解析式现算、不从实测反推：台面顶 y=1，静止落下 1 格要 √(2·1/g)，
+  // 离地那步 + 宽限期 12 步已用掉 13 步，实测余 19 步、总滞空 32 步。
+  var analytic = Math.round(Math.sqrt(2 * 1 / GD_Physics.CONST.G) / GD_Physics.CONST.DT);
+  var fall = 0;
+  while (!cs.onGround && fall < 60) { GD_Physics.step(cs, false); fall++; }
+  GD_ASSERT.ok(cs.onGround, '松手后应落回地面，窗口后再走 ' + fall + ' 步仍 y=' + cs.y);
+  GD_ASSERT.near(1 + 12 + fall, analytic, 2, '离地到落地的总滞空步数（解析 ' + analytic + '，实测 32）');
   // 上升段不另开探针：长按连跳那个循环已经在钉 bounced，空中若多发一次起跳计数就会翻。
 });
