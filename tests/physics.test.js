@@ -191,7 +191,7 @@ GD_ASSERT.test('L2 段落时长合计 32.0 秒', function () {
   GD_ASSERT.approx(t, 32.0, 0.02, '总时长秒');
 });
 
-GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
+GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍、回方块门必定触发', function () {
   var lv = GD_Level.crossbeat, objs = lv.objects, end = lv.meta.endBlock;
   for (var i = 0; i < objs.length; i++) {
     GD_ASSERT.ok(objs[i].x >= 0 && objs[i].x <= end, '对象越界: ' + objs[i].t + '@' + objs[i].x);
@@ -204,4 +204,34 @@ GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
       }
     }
   }
+  // 传送门/速度门的触发框不能压住尖刺或方块：压住了玩家就会死在门旁边而不是被门传送。
+  // 框的尺寸直接读 physics 的常量，不在测试里另抄一份（抄一份就会各自漂移）。
+  var HIT = GD_Physics.CONST.HIT, C = GD_Physics.CONST;
+  var gates = objs.filter(function (o) { return o.t.indexOf('portal_') === 0 || o.t.indexOf('speed_') === 0; });
+  var solids = objs.filter(function (o) { return o.t === 'spike' || o.t === 'block'; });
+  for (var g = 0; g < gates.length; g++) {
+    var gb = { x0: gates[g].x, x1: gates[g].x + HIT.GATE_W, y0: gates[g].y, y1: gates[g].y + HIT.GATE_H };
+    for (var s = 0; s < solids.length; s++) {
+      var sb = solids[s].t === 'spike'
+        ? { x0: solids[s].x + 0.5 - C.SPIKE_HW / 2, x1: solids[s].x + 0.5 + C.SPIKE_HW / 2,
+            y0: solids[s].y, y1: solids[s].y + C.SPIKE_HH }
+        : { x0: solids[s].x, x1: solids[s].x + 1, y0: solids[s].y, y1: solids[s].y + 1 };
+      if (gb.x0 < sb.x1 && gb.x1 > sb.x0 && gb.y0 < sb.y1 && gb.y1 > sb.y0) {
+        throw new Error('传送门触发框压住 ' + solids[s].t + '@' + solids[s].x + ',' + solids[s].y +
+                       '（门 ' + gates[g].t + '@' + gates[g].x + ',' + gates[g].y + '）');
+      }
+    }
+  }
+  // 回方块的门与降速门必须真的能触发。
+  // 玩家贴地时框是 [0,1]；门放在 y=1.0 时触发框是 [1,3.6]，两者只在 y=1 处相接，
+  // 而 overlap 用的是严格不等号 → 永远不重叠 → 门形同虚设：
+  // 实测贴地跑过 x=253 仍是飞船模式，随后撞死在 x=264 的第一根尖刺。
+  // 门贴地（y=0.5）后触发窗口是 y∈(-0.5, 3.1)，松手落地的玩家必然命中。
+  var g2 = GD_Physics.create(lv);
+  g2.mode = 'ship'; g2.speedKey = 2; g2.x = 250; g2.y = 0; g2.vy = 0; g2.onGround = false;
+  for (var s2 = 0; s2 < 240 * 3 && g2.x < 258; s2++) GD_Physics.step(g2, false);
+  GD_ASSERT.ok(g2.mode === 'cube',
+    '贴地跑过回方块门后应切成 cube，实为 ' + g2.mode + '（x=' + g2.x.toFixed(2) + '）');
+  GD_ASSERT.ok(g2.speedKey === 1,
+    '贴地跑过降速门后应回到 1x，实为 ' + g2.speedKey);
 });

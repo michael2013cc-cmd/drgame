@@ -16,7 +16,17 @@
 
 ## 环境事实（不要重复踩）
 
-- **本机无 Node**：`node` 不在 PATH，`C:\Program Files\nodejs` 不存在，Qoder 安装目录内无 `node.exe`。任何 `node xxx` 命令都会失败。
+> **2026-11-08 接手时更新（原机的环境事实已不适用，以本段为准）**
+>
+> - 仓库路径已从 `C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7` 迁到 `C:/Users/user/Documents/My Games/drgame`（含空格，命令行里记得加引号）。本计划里所有命令路径都已同步。
+> - **本机现在有 Node 24.14.0**（原机没有）。仓库**仍然保持零依赖**：不要 `npm install`、不要加 `package.json`、不要写 `npm test`。Node 只用来跑一个**仓库外**的只读快速回路，**权威判定仍是真实浏览器**。
+> - **Chrome 在 DSH 的文件沙箱里起不来**：crashpad/Mojo 的命名管道被拦（`OpenProcess: 存取被拒` 后自杀）。跑浏览器测试需要 `danger-full-access`。每次用**全新 `user-data-dir`** 起 headless Chrome，缓存天然为空，因此下文「测试执行流程」里 `?v=` / `ignoreCache` 那套在本机不必再操心。
+> - Git 身份走全局 git config，提交命令里**不再**带 `-c user.name=... -c user.email=...`。
+> - 远端 `origin` 的凭据对本仓库**无写权限**（403）。当前阶段只在本地开发与提交，推送先不做。
+>
+> 原机（Qoder 那台）的环境事实，保留在此以备对照：
+
+- **原机无 Node**：`node` 不在 PATH，`C:\Program Files\nodejs` 不存在，Qoder 安装目录内无 `node.exe`。任何 `node xxx` 命令都会失败。
 - **`mcp__node-repl__node_repl` 不是 Node**：实测无 `require`、无 `process`、无文件系统。只适合算数，不能跑测试。
 - **可用**：Python 3.11/3.14、Chrome、Edge、browser-use MCP（`navigate_page` / `evaluate_script` / `take_screenshot`）。
 - 所有测试通过 `tests/harness.html` 在浏览器里跑，结果读回 `window.__RESULTS__`。
@@ -69,7 +79,7 @@ Verlet 对恒定加速度**解析精确**：解析顶点 v0²/(2g) = 2.173781，
 **Step A — 起静态服务**（只需一次，跨任务复用；后台运行）
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && python -m http.server 8765 --bind 127.0.0.1
+cd "C:/Users/user/Documents/My Games/drgame" && python -m http.server 8765 --bind 127.0.0.1
 ```
 
 用 Bash 工具的 `run_in_background: true`。预期：进程存活，无输出即正常。
@@ -116,8 +126,22 @@ window.GD_ASSERT = (function () {
   function test(name, fn) { tests.push({ name: name, fn: fn }); }
   function expect_tests(n) { EXPECTED_COUNT = n; }
 
+  // 近似比较前必须先确认两个值都是有限数。
+  // 以前不查：|NaN - 32| > tol 恒为 false，于是 approx(NaN, 32, ...) 悄悄放过。
+  // 后果实测过：把某段的 speed 写成 '2x' → L2 算出的时长变成 NaN → L2 仍绿，
+  // 而 validate() 又放行了那个关卡 → L1 也绿。一条写错的速度键名能同时骗过两条断言。
+  function finite(actual, expected, label) {
+    if (typeof actual !== 'number' || !isFinite(actual)) {
+      throw new Error((label || 'approx') + ': 实得非有限值 ' + actual + '（期望 ' + expected + '）');
+    }
+    if (typeof expected !== 'number' || !isFinite(expected)) {
+      throw new Error((label || 'approx') + ': 期望值非有限 ' + expected);
+    }
+  }
+
   function approx(actual, expected, tolPct, label) {
     if (expected === 0) throw new Error((label || 'approx') + ': 期望值为 0，approx 用相对误差无意义，改用 near()');
+    finite(actual, expected, label);
     var err = Math.abs(actual - expected) / Math.abs(expected);
     if (err > tolPct) {
       throw new Error((label || 'approx') + ': 期望 ' + expected +
@@ -128,6 +152,8 @@ window.GD_ASSERT = (function () {
     if (!cond) throw new Error('断言失败: ' + (label || 'ok'));
   }
   function near(actual, expected, abs, label) {
+    // 同 approx：NaN 参与比较恒为 false，不查的话 near(NaN, 0, 0.001) 永远通过
+    finite(actual, expected, label);
     if (Math.abs(actual - expected) > abs) {
       throw new Error((label || 'near') + ': 期望 ' + expected + ' 实得 ' + actual +
         ' 差 ' + Math.abs(actual - expected).toFixed(6) + ' > ' + abs);
@@ -143,8 +169,12 @@ window.GD_ASSERT = (function () {
     }
     if (EXPECTED_COUNT !== null && tests.length !== EXPECTED_COUNT) {
       fail++;
-      log.push('FAIL 用例注册数: 期望 ' + EXPECTED_COUNT + ' 条，实得 ' + tests.length +
-        ' 条（有用例文件抛异常、为空或没加载）');
+      // 少注册和多注册的原因完全不同，提示语要分开说：
+      // 少了 = 有用例文件在注册期抛异常或没加载；多了 = 门禁数字本身该跟着改。
+      var why = tests.length < EXPECTED_COUNT
+        ? '（有用例文件抛异常、为空或没加载）'
+        : '（多注册了用例：expect_tests 的门禁数字该一起改）';
+      log.push('FAIL 用例注册数: 期望 ' + EXPECTED_COUNT + ' 条，实得 ' + tests.length + ' 条' + why);
     }
     window.__RESULTS__ = { pass: pass, fail: fail, registered: tests.length, log: log };
     window.__READY__ = true;
@@ -249,7 +279,7 @@ GD_ASSERT.test('S2 断言失败能被捕获', function () {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 浏览器内测试脚手架
+cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "test: 浏览器内测试脚手架
 
 本机无 Node，测试改为静态服务 + browser-use 驱动 harness.html。"
 ```
@@ -313,13 +343,23 @@ window.GD_Physics = (function () {
     ROT_SPEED: 270,           // 度/秒，空中恒速
     ROT_SNAP: 20,             // 落地吸附到最近 90° 的插值速率
     LAND_TOL: 0.33,           // 格，10 units
-    SOLID_HB: 0.3,            // 与实心块致用的缩小框边长
-    SPIKE_HB: 0.55,           // 尖刺致死框（自调参项，spec §13.1）
+    SOLID_HB: 0.3,            // 与实心块共用的缩小框边长
+    SPIKE_HW: 0.55,           // 尖刺致死框宽（自调参项，spec §13.1）
+    SPIKE_HH: 0.55,           // 尖刺致死框高（自调参项，spec §13.1）
     DEATH_DELAY: 1.0,
     SPEEDS: { 0.5: 8.372, 1: 10.386, 2: 12.914, 3: 15.600, 4: 19.200 },
     SHIP: { UP_A: 46.0, DOWN_A: 55.2, CAP_UP: 16.0, CAP_DOWN: -19.2, CAP_DOWN_HELD: -12.8 },
     PAD: { pad_pink: 21.08, pad_yellow: 32.28 },
-    RING: { ring_pink: 15.78, ring_yellow: 23.40 }
+    RING: { ring_pink: 15.78, ring_yellow: 23.40 },
+    // 命中框尺寸：以前散在 collide() 里当字面量，想调框宽就得同时改好几处，
+    // 漏一处就会出现"看着撞上了却不判死"或"没撞上却判死"。收进表里，
+    // 测试也能直接读同一份数字，不必在测试里另抄一遍。
+    HIT: {
+      PAD_H: 0.35,                          // 跳板顶面厚度
+      RING_X0: -0.6, RING_X1: 1.6,          // 跳环触发框相对环心的横向范围
+      RING_Y0: -0.6, RING_Y1: 1.6,          // 跳环触发框相对环心的纵向范围
+      GATE_W: 1.4, GATE_H: 2.6              // 传送门/速度门触发框
+    }
   };
 
   // 关卡常数表被导出去给 render/hud/tests 读，必须冻死：实测把 CONST.G 改成 1
@@ -331,6 +371,7 @@ window.GD_Physics = (function () {
   Object.freeze(CONST.SHIP);
   Object.freeze(CONST.PAD);
   Object.freeze(CONST.RING);
+  Object.freeze(CONST.HIT);
 
   var GROUND = 0;   // 地面线 y=0，向上为正
 
@@ -373,14 +414,14 @@ window.GD_Physics = (function () {
   function boxOf(o) {
     if (o.t === 'block') return { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + 1 };
     if (o.t === 'spike') {
-      var c = CONST.SPIKE_HB / 2;
-      return { x0: o.x + 0.5 - c, x1: o.x + 0.5 + c, y0: o.y, y1: o.y + CONST.SPIKE_HB };
+      var c = CONST.SPIKE_HW / 2;
+      return { x0: o.x + 0.5 - c, x1: o.x + 0.5 + c, y0: o.y, y1: o.y + CONST.SPIKE_HH };
     }
     return { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + 1 };
   }
 
   // 只遍历 x 附近的对象；关卡 ~200 个对象，线性扫描足够（不建索引，YAGNI）
-  function near(st) {
+  function nearby(st) {
     var out = [], objs = st.level.objects;
     for (var i = 0; i < objs.length; i++) {
       if (objs[i].x > st.x - 3 && objs[i].x < st.x + 3) out.push({ i: i, o: objs[i] });
@@ -419,7 +460,7 @@ window.GD_Physics = (function () {
     if (st.onGround) {
       if (held) { st.vy = CONST.JUMP_V0; st.onGround = false; }
       else {
-        var gy = GROUND_Y(st);
+        var gy = groundY(st);
         // 支撑面掉到脚下以下 = 走出了台沿，必须放成自由落体，不能拿 gy 硬吸附。
         // 旧写法一步把 y 从 1 拉到 0（实测 x=5.5246 那步，两格台同样是 2→0 一步到底），
         // 于是"走下台阶"既不掉落也就永远勾不出空中态，coyote 无从验证。
@@ -453,8 +494,8 @@ window.GD_Physics = (function () {
   }
 
   // 玩家脚下可站立的面（地面或方块顶），考虑容差
-  function GROUND_Y(st) {
-    var best = GROUND, list = near(st);
+  function groundY(st) {
+    var best = GROUND, list = nearby(st);
     for (var k = 0; k < list.length; k++) {
       var o = list[k].o;
       if (o.t !== 'block') continue;
@@ -468,7 +509,7 @@ window.GD_Physics = (function () {
   // held 必须传进来：跳环是"按下才触发"的，少了这个形参严格模式下会抛
   // ReferenceError（实测关卡里只要有 ring，玩家一进其 3 格邻域整个模拟就炸）。
   function collide(st, held) {
-    var list = near(st), pb = playerBox(st), i, o;
+    var list = nearby(st), pb = playerBox(st), i, o;
 
     for (i = 0; i < list.length; i++) {
       o = list[i].o;
@@ -487,29 +528,30 @@ window.GD_Physics = (function () {
           if (overlap(core, solid)) { die(st); return; }
         }
       } else if (o.t === 'pad_pink' || o.t === 'pad_yellow') {
-        if (overlap(pb, { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + 0.35 })) {
+        if (overlap(pb, { x0: o.x, x1: o.x + 1, y0: o.y, y1: o.y + CONST.HIT.PAD_H })) {
           st.vy = CONST.PAD[o.t]; st.onGround = false;
         }
       } else if (o.t === 'ring_pink' || o.t === 'ring_yellow') {
         if (st.used[list[i].i]) continue;
         if (held && overlap({ x0: st.x - 0.5, x1: st.x + 0.5, y0: st.y, y1: st.y + 1 },
-                            { x0: o.x - 0.6, x1: o.x + 1.6, y0: o.y - 0.6, y1: o.y + 1.6 })) {
+                            { x0: o.x + CONST.HIT.RING_X0, x1: o.x + CONST.HIT.RING_X1,
+                              y0: o.y + CONST.HIT.RING_Y0, y1: o.y + CONST.HIT.RING_Y1 })) {
           st.vy = CONST.RING[o.t]; st.onGround = false; st.used[list[i].i] = true;
         }
       } else if (o.t === 'portal_ship' || o.t === 'portal_cube') {
-        if (overlap(pb, { x0: o.x, x1: o.x + 1.4, y0: o.y, y1: o.y + 2.6 })) {
+        if (overlap(pb, { x0: o.x, x1: o.x + CONST.HIT.GATE_W, y0: o.y, y1: o.y + CONST.HIT.GATE_H })) {
           st.mode = o.t === 'portal_ship' ? 'ship' : 'cube';
           if (st.mode === 'cube') { st.onGround = st.y <= GROUND + CONST.LAND_TOL; st.rot = Math.round(st.rot / 90) * 90; }
         }
       } else if (o.t === 'speed_2x' || o.t === 'speed_1x' || o.t === 'speed_3x' || o.t === 'speed_4x') {
-        if (overlap(pb, { x0: o.x, x1: o.x + 1.4, y0: o.y, y1: o.y + 2.6 })) {
+        if (overlap(pb, { x0: o.x, x1: o.x + CONST.HIT.GATE_W, y0: o.y, y1: o.y + CONST.HIT.GATE_H })) {
           st.speedKey = { speed_2x: 2, speed_1x: 1, speed_3x: 3, speed_4x: 4 }[o.t];
         }
       }
     }
 
     if (st.mode === 'cube') {
-      var gy = GROUND_Y(st);
+      var gy = groundY(st);
       if (st.y <= gy && st.vy <= 0) { st.y = gy; st.vy = 0; st.onGround = true; }
       else if (st.y > gy) { st.onGround = false; }
       if (st.y <= GROUND) { st.y = GROUND; }
@@ -548,7 +590,7 @@ window.GD_Physics = (function () {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 方块物理与跳跃常数
+cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git commit -m "feat: 方块物理与跳跃常数
 
 velocity-Verlet 积分，恒定加速度下解析精确（顶点距解析值 0.005%）。
 T1 除三条 2% 相对容差外，另钉一条绝对精度的积分器指纹断言——实测
@@ -628,7 +670,7 @@ GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 速度表回归，锁定 2x 门实为 1.243 倍"
+cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "test: 速度表回归，锁定 2x 门实为 1.243 倍"
 ```
 
 ---
@@ -795,7 +837,7 @@ GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 尖刺致死、墙体判定与死亡重开回归"
+cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "test: 尖刺致死、墙体判定与死亡重开回归"
 ```
 
 ---
@@ -826,7 +868,7 @@ GD_ASSERT.test('L2 段落时长合计 32.0 秒', function () {
   GD_ASSERT.approx(t, 32.0, 0.02, '总时长秒');
 });
 
-GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
+GD_ASSERT.test('L3 对象不越界、尖刺两两不重叠、门框不压障碍、回方块门必定触发', function () {
   var lv = GD_Level.crossbeat, objs = lv.objects, end = lv.meta.endBlock;
   for (var i = 0; i < objs.length; i++) {
     GD_ASSERT.ok(objs[i].x >= 0 && objs[i].x <= end, '对象越界: ' + objs[i].t + '@' + objs[i].x);
@@ -839,6 +881,36 @@ GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
       }
     }
   }
+  // 传送门/速度门的触发框不能压住尖刺或方块：压住了玩家就会死在门旁边而不是被门传送。
+  // 框的尺寸直接读 physics 的常量，不在测试里另抄一份（抄一份就会各自漂移）。
+  var HIT = GD_Physics.CONST.HIT, C = GD_Physics.CONST;
+  var gates = objs.filter(function (o) { return o.t.indexOf('portal_') === 0 || o.t.indexOf('speed_') === 0; });
+  var solids = objs.filter(function (o) { return o.t === 'spike' || o.t === 'block'; });
+  for (var g = 0; g < gates.length; g++) {
+    var gb = { x0: gates[g].x, x1: gates[g].x + HIT.GATE_W, y0: gates[g].y, y1: gates[g].y + HIT.GATE_H };
+    for (var s = 0; s < solids.length; s++) {
+      var sb = solids[s].t === 'spike'
+        ? { x0: solids[s].x + 0.5 - C.SPIKE_HW / 2, x1: solids[s].x + 0.5 + C.SPIKE_HW / 2,
+            y0: solids[s].y, y1: solids[s].y + C.SPIKE_HH }
+        : { x0: solids[s].x, x1: solids[s].x + 1, y0: solids[s].y, y1: solids[s].y + 1 };
+      if (gb.x0 < sb.x1 && gb.x1 > sb.x0 && gb.y0 < sb.y1 && gb.y1 > sb.y0) {
+        throw new Error('传送门触发框压住 ' + solids[s].t + '@' + solids[s].x + ',' + solids[s].y +
+                       '（门 ' + gates[g].t + '@' + gates[g].x + ',' + gates[g].y + '）');
+      }
+    }
+  }
+  // 回方块的门与降速门必须真的能触发。
+  // 玩家贴地时框是 [0,1]；门放在 y=1.0 时触发框是 [1,3.6]，两者只在 y=1 处相接，
+  // 而 overlap 用的是严格不等号 → 永远不重叠 → 门形同虚设：
+  // 实测贴地跑过 x=253 仍是飞船模式，随后撞死在 x=264 的第一根尖刺。
+  // 门贴地（y=0.5）后触发窗口是 y∈(-0.5, 3.1)，松手落地的玩家必然命中。
+  var g2 = GD_Physics.create(lv);
+  g2.mode = 'ship'; g2.speedKey = 2; g2.x = 250; g2.y = 0; g2.vy = 0; g2.onGround = false;
+  for (var s2 = 0; s2 < 240 * 3 && g2.x < 258; s2++) GD_Physics.step(g2, false);
+  GD_ASSERT.ok(g2.mode === 'cube',
+    '贴地跑过回方块门后应切成 cube，实为 ' + g2.mode + '（x=' + g2.x.toFixed(2) + '）');
+  GD_ASSERT.ok(g2.speedKey === 1,
+    '贴地跑过降速门后应回到 1x，实为 ' + g2.speedKey);
 });
 ```
 
@@ -853,7 +925,6 @@ GD_ASSERT.test('L3 对象不越界、不与传送门重叠', function () {
 ```js
 window.GD_Level = (function () {
   var BPM = 154;
-  var BEAT_BLOCKS_1X = 10.386 * (60 / BPM);   // 4.046 格 = 一拍
 
   function spikeRun(startX, count, y) {
     var a = [];
@@ -869,7 +940,7 @@ window.GD_Level = (function () {
   }
 
   var objects = [].concat(
-    // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍
+    // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍（1 拍 = 4.046 格，8 格 = 1.98 拍）
     spikeRun(14, 1),
     spikeRun(22, 1),
     spikeRun(30, 2),
@@ -888,11 +959,11 @@ window.GD_Level = (function () {
     pillar(100, 2),
     spikeRun(106, 1),
 
-    // 切船 110–118
+    // 切船 110–118：门都贴着地面（y=0.5），与地面线齐平
     { x: 112, y: 0.5, t: 'portal_ship' },
     { x: 116, y: 0.5, t: 'speed_2x' },
 
-    // 飞行 118–250：上下柱阵通道。@2x 一拍走 12.914*0.3896 = 5.03 格
+    // 飞行 118–254：上下柱阵通道。@2x 一拍走 12.914*0.3896 = 5.03 格
     // 通道净空 4 格，玩家 1 格，容错 3 格
     pillar(126, 4), { x: 126, y: 8, t: 'block' }, { x: 126, y: 9, t: 'block' }, { x: 126, y: 10, t: 'block' },
     { x: 134, y: 0, t: 'block' }, { x: 134, y: 1, t: 'block' }, { x: 134, y: 7, t: 'block' }, { x: 134, y: 8, t: 'block' },
@@ -905,14 +976,22 @@ window.GD_Level = (function () {
     pillar(190, 4), { x: 190, y: 9, t: 'block' }, { x: 190, y: 10, t: 'block' },
     { x: 198, y: 0, t: 'block' }, { x: 198, y: 1, t: 'block' }, { x: 198, y: 8, t: 'block' },
     pillar(206, 5), { x: 206, y: 10, t: 'block' },
-    { x: 214, y: 0, t: 'block' }, { x: 214, y: 2, t: 'block' }, { x: 214, y: 7, t: 'block' },
+    { x: 214, y: 0, t: 'block' }, { x: 214, y: 1, t: 'block' }, { x: 214, y: 2, t: 'block' }, { x: 214, y: 7, t: 'block' },
     pillar(222, 3), { x: 222, y: 8, t: 'block' }, { x: 222, y: 9, t: 'block' },
     { x: 230, y: 0, t: 'block' }, { x: 230, y: 1, t: 'block' }, { x: 230, y: 9, t: 'block' },
     pillar(238, 4), { x: 238, y: 10, t: 'block' },
 
-    // 回方块 254：门与降速同点，段落边界与传送门位置严格一致
-    { x: 253, y: 1.0, t: 'portal_cube' },
-    { x: 254, y: 1.0, t: 'speed_1x' },
+    // 回方块：切船门在 x=112、降速门在 x=116，两扇门都贴地（y=0.5）。
+    // 触发点是玩家前沿（x+0.5）碰到门的 x，所以实际切换发生在 x≈111.5 / 115.5，
+    // 段落的 118 / 254 只是主题分段点——两者不是一回事，别再写成"严格相等"。
+    // 回方块这扇门同样必须贴地：触发框是 [y, y+2.6]，玩家贴地时框是 [0,1]，
+    // 门放在 y=1.0 时 1 > 1 不成立，门永远不触发——实测贴地跑过 x=253 仍是飞船模式，
+    // 随后撞死在 x=264 的第一根尖刺。y=0.5 的触发窗口是 y∈(-0.5, 3.1)，
+    // 松手落地的玩家必然命中。
+    // 残留缺口：玩家若在出口一直按住（y>3.1）仍会错过这扇门。Task 7 把
+    // portal_cube 的触发框扩到覆盖整条航道时一并关掉。
+    { x: 253, y: 0.5, t: 'portal_cube' },
+    { x: 254, y: 0.5, t: 'speed_1x' },
 
     // 收尾 258–360：密集节奏段
     spikeRun(264, 1),
@@ -928,11 +1007,11 @@ window.GD_Level = (function () {
     spikeRun(330, 1),
     { x: 334, y: 2.4, t: 'ring_yellow' },
     spikeRun(340, 2),   // 三连刺打不过：y>=0.55 的窗口只有 3.49 格，三刺要 3.55
-    { x: 352, y: 0, t: 'finish' }
+    { x: 360, y: 0, t: 'finish' }   // 旗子与 endBlock 同点：越过 x=360 的瞬间判通关
   );
 
   var crossbeat = {
-    meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360, beatBlocks1x: BEAT_BLOCKS_1X },
+    meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360 },
     segments: [
       { from: 0,   to: 110, mode: 'cube', speed: 1, theme: 'blue'   },   // 10.591 s
       { from: 110, to: 118, mode: 'cube', speed: 1, theme: 'blue'   },   //  0.770 s  切船过渡
@@ -945,6 +1024,8 @@ window.GD_Level = (function () {
 
   var VALID_TYPES = ['spike', 'block', 'pad_pink', 'pad_yellow', 'ring_pink', 'ring_yellow',
                      'portal_ship', 'portal_cube', 'speed_1x', 'speed_2x', 'speed_3x', 'speed_4x', 'finish'];
+  // 合法门速。写在这里而不是从 physics 读：level.js 是纯数据层，不能反向依赖物理层。
+  var VALID_SPEEDS = [0.5, 1, 2, 3, 4];
 
   function validate(lv) {
     var errs = [];
@@ -957,6 +1038,10 @@ window.GD_Level = (function () {
         var o = lv.objects[i];
         if (typeof o.x !== 'number' || typeof o.y !== 'number') errs.push('对象缺 x/y: #' + i);
         if (VALID_TYPES.indexOf(o.t) < 0) errs.push('未知类型: ' + o.t + ' #' + i);
+        // 对象不能落在终点之后：那样它永远不会被玩家碰到，等于白放一个障碍
+        if (lv.meta && typeof lv.meta.endBlock === 'number' && o.x > lv.meta.endBlock) {
+          errs.push('对象越过终点: ' + o.t + '@' + o.x);
+        }
       }
     }
     if (lv.segments) {
@@ -964,6 +1049,19 @@ window.GD_Level = (function () {
         var sg = lv.segments[s];
         if (['cube', 'ship'].indexOf(sg.mode) < 0) errs.push('非法 mode: ' + sg.mode);
         if (typeof sg.from !== 'number' || typeof sg.to !== 'number') errs.push('段落缺 from/to #' + s);
+        else {
+          if (sg.to <= sg.from) errs.push('段落 from>=to #' + s + ' (' + sg.from + '→' + sg.to + ')');
+          if (VALID_SPEEDS.indexOf(sg.speed) < 0) errs.push('非法 speed: ' + sg.speed + ' #' + s);
+        }
+      }
+      // 段落必须首尾相接且从 0 开始：Task 12 的 tOf() 按段落做分段积分，
+      // 段落之间留缝会让"到达 x 的时刻"整体算偏。
+      if (lv.segments.length && lv.segments[0].from !== 0) errs.push('第一个段落必须从 0 开始');
+      for (var k = 1; k < lv.segments.length; k++) {
+        if (lv.segments[k].from !== lv.segments[k - 1].to) {
+          errs.push('段落不连续: #' + (k - 1) + ' 结束于 ' + lv.segments[k - 1].to +
+                    '，#' + k + ' 从 ' + lv.segments[k].from + ' 开始');
+        }
       }
     }
     return errs;
@@ -979,12 +1077,23 @@ window.GD_Level = (function () {
 
 若 `L2` 红：段落 `from/to/speed` 与上表注释不一致，按注释修。
 
-**与 spec §7 的偏差（有意为之）**：§7 的表格把关卡切成 6 段，其中"切船 110–118""回方块 250–258"是描述性的过渡区间，没有独立的 mode/speed。这里压成 4 段，让**段落边界与传送门 x 坐标严格相等**（118 与 254），否则 `replay.js` 的 `tOf()` 分段积分会和物理实际走的轨迹对不上。总时长 32.098 s，仍在 §7 的 32.0 s ±2% 内。
+**与 spec §7 的偏差（有意为之）**：§7 的表格把关卡切成 6 段，其中"切船 110–118""回方块 250–258"是描述性的过渡区间，没有独立的 mode/speed。这里压成 4 段（118 / 254），让**段落边界与主题切换点对齐**，方便 `replay.js` 的 `tOf()` 分段积分与物理实际走的轨迹对上。总时长 32.098 s，仍在 §7 的 32.0 s ±2% 内。
+
+**注意：段落边界 ≠ 传送门触发点（2026-11-08 更正）**。传送门与速度门是在**玩家前沿（x+0.5）碰到门的 x** 时才生效，所以实际切换点是：
+
+| 事件 | 门的位置 | 实际生效 x |
+|---|---|---|
+| 切船（cube→ship） | `portal_ship` x=112 | ≈111.5 |
+| 提速（1x→2x） | `speed_2x` x=116 | ≈115.5 |
+| 回方块（ship→cube） | `portal_cube` x=253 | ≈252.5 |
+| 降速（2x→1x） | `speed_1x` x=254 | ≈253.5 |
+
+段落断点 118 / 254 与它们差 0.5 格。旧文档写成"段落边界与传送门 x 坐标严格相等（118 与 254）"是**错的**——那句话连着 handoff 一起传了下来。`replay.js` 的 `tOf()` 因此改成**从关卡里的速度门推导档位**，不再抄一份手写的段表。
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add level.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: Crossbeat 关卡数据与校验
+cd "C:/Users/user/Documents/My Games/drgame" && git add level.js tests && git commit -m "feat: Crossbeat 关卡数据与校验
 
 障碍按 154 BPM 的时间网格摆放，一次跳跃 = 一拍。"
 ```
@@ -1055,7 +1164,7 @@ if (st.x + 0.5 > o.x && st.x - 0.5 < o.x + 1 && wasY >= o.y + 0.35 && st.y <= o.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 跳板与跳环触发，含单次触发约束"
+cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git commit -m "feat: 跳板与跳环触发，含单次触发约束"
 ```
 
 ---
@@ -1128,10 +1237,51 @@ GD_Physics.create({
 
 预期：`pass: 16, fail: 0, registered: 16, runErrors: []`。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: 关掉两个已排期的传送门缺陷**
+
+这两个都属于"传送门切换"，放在本任务做，不要拖到 Task 13：
+
+1. **`portal_cube` 的触发框必须覆盖整条航道。** 现在的触发框是 `1.4 × 2.6` 格（`CONST.HIT.GATE_W/GATE_H`），而飞船段出口的净空带是 **y∈[4,9]**（15 列通道逐列算出来的）。玩家若在出口一直按住（y>3.1）就会**错过回方块门**：实测他仍以飞船模式撞死在 x=264 的第一根尖刺，或者干脆以 2x 飞过整个收尾段直接通关——后者等于把这一关最花心思的收尾白送。原版里关卡段落末尾的传送门是**通高**的，我们把 `portal_cube` 的触发框改成覆盖 y∈[0,12]，并让 `render.js` 把它画成一根通高的门柱。
+2. **`portal_cube` 置 `onGround = true` 时必须清 `vy`。** 现在 `st.onGround = st.y <= GROUND + CONST.LAND_TOL;` 之后没清 `vy`，破坏了"在地面 ⇒ `vy == 0`"这条不变式——而自查记录第 15 条的台沿自由落体分支正依赖它：飞船残余的 `vy` 带进方块模式会多飞一下（handoff 缺陷清单第 1 条）。
+
+在 `T4c` 里补断言（**不新增用例，计数仍是 16**）：
+
+```js
+  // 高空飞过回方块门也必须切成 cube：门的触发框要覆盖整条航道
+  var hi = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+  });
+  hi.mode = 'ship'; hi.y = 9; hi.vy = 0;
+  for (var k = 0; k < 240 * 3 && hi.alive && hi.mode === 'ship'; k++) {
+    hi.y = 9; hi.vy = 0;            // 把飞船钉在航道顶端，模拟"一直按住往上飞"
+    GD_Physics.step(hi, false);
+  }
+  GD_ASSERT.ok(hi.mode === 'cube',
+    '高空飞过回方块门也应切成 cube，实为 ' + hi.mode + '（y=' + hi.y.toFixed(2) + '）');
+
+  // 切回方块的那一刻，"在地面 ⇒ vy==0"必须成立（handoff 缺陷清单第 1 条）
+  var g = GD_Physics.create({
+    objects: [{ x: 10, y: 0.5, t: 'portal_cube' }],
+    meta: { endBlock: 100000 },
+    segments: [{ from: 0, to: 100, mode: 'cube', speed: 1 }]
+  });
+  g.mode = 'ship'; g.y = 0.2; g.vy = 16;    // 贴着地面、正要往上冲的飞船
+  for (var k2 = 0; k2 < 240 * 3 && g.alive; k2++) {
+    if (g.mode === 'ship') { g.y = 0.2; g.vy = 16; }   // 钉住这个状态直到进门
+    GD_Physics.step(g, false);
+    if (g.mode === 'cube') break;                       // 刚切回来的那一瞬间
+  }
+  GD_ASSERT.ok(g.mode === 'cube', '贴地过回方块门应切成 cube，实为 ' + g.mode);
+  GD_ASSERT.ok(!(g.onGround && g.vy !== 0),
+    '切回方块后若在地面，vy 必须为 0，实为 vy=' + g.vy + ' onGround=' + g.onGround);
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add physics.js tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 飞船模式与传送门切换，锁定水平速度与方块一致"
+cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git commit -m "feat: 飞船模式与传送门切换，锁定水平速度与方块一致"
 ```
 
 ---
@@ -1219,10 +1369,18 @@ GD_ASSERT.SOURCES = {};
 
 `D1` 在此任务时 `render.js`/`hud.js`/`input.js`/`audio.js` 还不存在，预取只会拿到 2 个源文件——预取的 `waited > 40` 超时兜底正是为此而写，D1 检查的 `physics.js` 已就位，不受影响。
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: 修掉 `collide` 里过期的玩家框（handoff 缺陷清单第 3b 条）**
+
+`collide()` 在进循环前算一次 `pb = playerBox(st)`，循环里却会改 `st.y`（落到方块顶时 `st.y = top`、跳板/跳环触发时改 `st.vy`），之后同一个循环里的尖刺/跳板/传送门判定**仍在用旧框**；而跳环分支偏偏又现算了一个新框——同一帧里存在两套玩家框。
+
+当前关卡触发不到（所有尖刺都在 y=0，落地吸附最多把 y 抬到 `LAND_TOL=0.33`，而尖刺框高 0.55；且块与尖刺最近相距 6 格，超出 `nearby()` 的 ±3 格窗口），所以**这是潜伏缺陷，不是当前 bug**。但只要关卡里出现"离地尖刺"且与落地同帧，就会误判死亡。
+
+修法：玩家框每轮重算（或者在改过 `st.y` 之后重算），不要跨对象复用。改完必须重跑关卡可通性扫描确认 `zeroTapGroups` 仍为空——这是行为改动，不是纯重构。
+
+- [ ] **Step 4: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: 随机输入稳定性、重开清洁度与 physics 层依赖约束"
+cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js tests && git commit -m "test: 随机输入稳定性、重开清洁度与 physics 层依赖约束"
 ```
 
 ---
@@ -1456,7 +1614,7 @@ GD_Render.draw(r, st, 1/60);
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add render.js tests/visual-smoke.html && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 渲染层，三层视差背景与自绘同风格素材"
+cd "C:/Users/user/Documents/My Games/drgame" && git add render.js tests/visual-smoke.html && git commit -m "feat: 渲染层，三层视差背景与自绘同风格素材"
 ```
 
 ---
@@ -1513,7 +1671,7 @@ window.GD_Hud = (function () {
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add hud.js tests/visual-smoke.html && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: HUD，FPS / Attempt / 进度条"
+cd "C:/Users/user/Documents/My Games/drgame" && git add hud.js tests/visual-smoke.html && git commit -m "feat: HUD，FPS / Attempt / 进度条"
 ```
 
 ---
@@ -1713,7 +1871,7 @@ window.GD_Main = (function () {
 - [ ] **Step 5: 验证双击即玩**
 
 先验证 `file://` 路径（这是 spec §14 验收项 2）：用 `mcp__browser-use__navigate_page` 打开
-`file:///C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7/index.html`。
+`file:///C:/Users/user/Documents/My%20Games/drgame/index.html`。
 
 然后 `list_console_messages` 取错误，`evaluate_script` 读 `JSON.stringify(window.__GD_TEST__.state())`。
 
@@ -1724,7 +1882,7 @@ window.GD_Main = (function () {
 - [ ] **Step 6: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add input.js audio.js main.js index.html && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "feat: 输入、154 BPM 合成音轨与装配，双击即玩"
+cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.js index.html && git commit -m "feat: 输入、154 BPM 合成音轨与装配，双击即玩"
 ```
 
 ---
@@ -1803,18 +1961,28 @@ GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
 window.GD_Replay = (function () {
   var SPAN = GD_Physics.measureJump(1).span;      // 4.06 格，实测而非硬编码
   var S = GD_Physics.CONST.SPEEDS;
-  // 段落边界必须与 level.js 的 segments 完全一致
-  var SEGS = [[0, 110, 1], [110, 118, 1], [118, 254, 2], [254, 360, 1]];
+  var LV = GD_Level.crossbeat;
+
+  // 速度档位的生效点是"玩家前沿（x+0.5）碰到速度门的 x"，即门位置 - 0.5。
+  // 必须从关卡数据推导，不要在这里抄第二份档位表：
+  // 段落断点 118/254 与实际生效点 115.5/253.5 并不相同（差 0.05 秒），
+  // 后面每一个起跳时刻都会跟着偏，而且这种偏很容易被误读成"关卡太难"。
+  var GATES = LV.objects
+    .filter(function (o) { return o.t.indexOf('speed_') === 0; })
+    .map(function (o) {
+      return { x: o.x - 0.5, speed: { speed_1x: 1, speed_2x: 2, speed_3x: 3, speed_4x: 4 }[o.t] };
+    })
+    .sort(function (a, b) { return a.x - b.x; });
 
   function tOf(x) {
-    var t = 0;
-    for (var i = 0; i < SEGS.length; i++) {
-      var a = SEGS[i][0], b = SEGS[i][1], v = S[SEGS[i][2]];
-      if (x >= b) t += (b - a) / v;
-      else if (x > a) { t += (x - a) / v; break; }
-      else break;
+    var t = 0, cur = 0, v = S[LV.segments[0].speed];
+    for (var i = 0; i < GATES.length; i++) {
+      if (x <= GATES[i].x) break;
+      t += (GATES[i].x - cur) / v;
+      cur = GATES[i].x;
+      v = S[GATES[i].speed];
     }
-    return t;
+    return t + (x - cur) / v;
   }
 
   var seq = [];
@@ -1831,15 +1999,17 @@ window.GD_Replay = (function () {
     seq.push({ t: t + 0.05, d: false });
   }
 
-  // 尖刺阵：[起点, 宽度]
+  // 尖刺阵：[起点, 宽度] —— 宽度必须与 level.js 一致。
+  // c54f39d 把 pillar(82,3) / pillar(324,3) / spikeRun(340,3) 都降成了 2，
+  // 这份表当时漏改（计划自查记录第 16 条），照抄会带着过期的障碍宽度。
   [[14, 1], [22, 1], [30, 2], [48, 1], [64, 2], [74, 2], [94, 2], [106, 1],
-   [264, 1], [272, 2], [286, 1], [294, 2], [304, 2], [318, 2], [330, 1], [340, 3]]
+   [264, 1], [272, 2], [286, 1], [294, 2], [304, 2], [318, 2], [330, 1], [340, 2]]
     .forEach(function (a) { jumpOver(a[0], a[1]); });
   // 需要站上去的柱阵（2 格高可站，3 格高需借跳板/环）
   [42, 58, 100, 280, 312].forEach(jumpOntop);
-  // 3 格墙与高台：靠跳板/环，不靠普通跳
-  jumpOver(82, 3);   // pillar(82,3) —— 实际由 pad_pink@70 越过，此处为兜底序列
-  jumpOver(324, 3);  // pillar(324,3) —— 实际由 ring_yellow@334 之前的节奏处理
+  // 2 格墙与高台：靠跳板/环，不靠普通跳
+  jumpOver(82, 2);   // pillar(82,2)
+  jumpOver(324, 2);  // pillar(324,2)
 
   // 飞船段 118–254：间歇按住维持通道高度
   for (var t = tOf(118); t < tOf(254); t += 0.42) {
@@ -1861,7 +2031,7 @@ window.GD_Replay = (function () {
 - [ ] **Step 6: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "test: Crossbeat 通关回放，证明关卡人类可通"
+cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "test: Crossbeat 通关回放，证明关卡人类可通"
 ```
 
 ---
@@ -1899,7 +2069,7 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -
 删除 `tests/visual-smoke.html`（Task 9 的调试页，不属于交付物）。
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git rm tests/visual-smoke.html
+cd "C:/Users/user/Documents/My Games/drgame" && git rm tests/visual-smoke.html
 ```
 
 - [ ] **Step 5: 跑完整测试 + 最终截图**
@@ -1911,7 +2081,7 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git rm tests/visual-sm
 - [ ] **Step 6: Commit**
 
 ```bash
-cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c user.name="Qoder" -c user.email="qoder@local" commit -m "fix: 实玩手感校准"
+cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js level.js && git commit -m "fix: 实玩手感校准"
 ```
 
 ---
@@ -1947,3 +2117,6 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c u
 | 14 | Task 4 质量复查：T5a/T5b/T5c 只断"结果"不钉"原因"。T5a 只查 `!alive`（任何误判早死都绿灯）、名字写着"从 0% 重开"却从不看 `percent`、重开等待写死 240 步；T5b 的 `trial()` 只返回 `st.alive`，"跳过 2 格墙"没证明翻过墙、"撞死 3 格墙"没证明死在墙上，注释里的起跳区间还是过期读数；T5c 标题里的"无 coyote time"零覆盖——平地长按那个循环从不离开地面，任何宽限期都照样绿，`bounced >= 2` 低到"只弹两次也算连跳" | 误判早死、重开没回到 0%、判定框改坏、有人加 coyote grace 都不会红；写死 240 步还会在合法微调常数时把正确实现跑红（模拟 `DEATH_DELAY = 0.5` → 120 步就重开，剩下 120 步活跑 x=5.193，`near(st.x, 0, 0.05)` 必红） | T5a 钉住死亡瞬间 x（实测 7.7462：玩家前沿 `st.x+0.5` 首次进入致死框 `x∈[8.225, 8.775]` 的那一步）+ "同关卡去掉尖刺同样步数仍活着"的反证 + 重开后 `percent === 0 && time === 0`，等待步数改成 `round(CONST.DEATH_DELAY / CONST.DT)`（当前 240，等价性不再写进测试体）；T5b `trial()` 改返 `{alive, x, y}`，断 2 格墙 480 步跑到 x=20.77 > 8、3 格墙死在墙柱内（实测 x=6.2316、y=2.1454，落在 x∈(6,7)），注释与第 13 条同步成实测区间；T5c 的 `bounced` 下限收到 6（实测 7）。本条当时给 T5c 补的"真 coyote 探针"其实是拿起跳后按住冒充，测的是"空中不连跳"而不是 coyote 宽限期，它那句"`physics.js` 不需改动、走下台沿不产生空中态"也把缺陷当成了既成事实——由第 15 条推翻并修物理 |
 | 15 | Task 4 质量复查第二轮：走下台沿不掉落是 **`physics.js` 的缺陷**，不是"没法测 coyote"的客观限制。原 `stepCube` 在 `onGround` 且未按时，无条件 `st.y = GROUND_Y(st)`，而 `GROUND_Y` 的支撑窗口是整框重叠（`st.x > o.x + 1.52` 即失效），于是失去支撑那一步把 y 从台面直接拽到地面（实测 x=5.5246 处 1→0、两格台 2→0，`onGround` 全程为真、空中态 0 步） | 原版里走下台阶是掉下去，这里等于"踩空即传送"，Task 5 关卡里任何台沿、Task 12 回放机器人都会被它污染；更要紧的是没有空中态就没有 coyote 的可验对象，第 14 条因此只能用起跳冒充 | `stepCube` 改为支撑面低于脚下时置 `onGround = false`、交给同一步的重力积分做自由落体（`Task 2` Step 3 代码块同步）。实测失去地面那步 `y=0.999, vy=-0.479`（从静止起步，一步重力增量），一格台 31 步、两格台 44 步后落地；T5b 起跳阈值区间在新物理下重扫仍为连续的 `[2.5, 5.45]`、3 格墙 0 个可通过阈值、死点 x=6.2316 未变，注册数与 `pass: 8, fail: 0` 不变。coyote 探针改成真的走台沿：离地后按住 12 步（0.05 s）断 `reJump === 0`，负控在离地后外部把 `vy` 重置回 `JUMP_V0` 得 `reJump: 12`、窗口内 `maxVy: 21.88`（干净跑 `maxVy: -0.958`）。另记一条流程坑：`?v=` 只 bust `harness.html`，**bust 不到 `<script src>` 子资源**——改完 `physics.js` 换新 `?v=` 的页面照旧跑旧物理，必须 `navigate_page {type: "reload", ignoreCache: true}`；「测试执行流程」Step B 已补。复审另提三条 nit：①T5c 原先只钉"离地瞬间"和"12 步后仍在空中"，浮空冻结（`onGround` 假但 `vy` 不再积分）能同时躲过，已补总滞空步数断言，期望值现算 `round(√(2·1/g)/DT)`（=32，实测 1+12+19=32）而不是抄实测；②`portal_cube` 置 `onGround` 不清 `vy` 破坏"在地面 ⇒ `vy==0`"不变式，本条的新分支正依赖它，已并入第 11 条延后清单留给 Task 7；③harness 那 3 条 404 是后续任务的前向引用，不动 |
 | 16 | Task 5 关卡数据落地后做了两件事才敢提交：①带 `ring` 的关卡一进邻域就崩——`collide(st)` 少了 `held` 形参，而跳环是"按下才触发"的，`'use strict'` 里引用未定义形参直接 `ReferenceError`（physics.js 命中环那一步）；②拿穷举起跳阈值的机器人扫全关，发现三处按物理常数根本打不通：`pillar(82,3)`、`pillar(324,3)` 的 3 格柱 tap 可通过阈值 **0/65**，`spikeRun(340,3)` 三连刺要腾空覆盖 3.55 格而实测 `y≥0.55` 的窗口只有 **3.49 格**（tap/hold 都 0）| ①Task 6 一加环整个模拟就炸，而且炸在关卡数据里，症状会误判成"关卡布局有问题"；②关卡号称"人类可通"却有三处死局，Task 12 通关机器人会在第一个 3 格柱就永远过不去，届时容易被误读成"机器人策略不行"而去放宽物理 | ①`collide(st, held)` + 调用点同步（Task 2 Step 3 代码块已镜像）；②两处柱子降为 2 格、三连刺改双连刺，并把各障碍的可通过窗口记进注释：单刺 20/65、双刺 10/65、2 格柱 30/65、环/板/传送门/终点 64–65/65。改完全关 30 个 cube 组 `zeroTapGroups: []`，`pass: 11, fail: 0, registered: 11` 不变。**顺带两条要记住的**：(a) 审计机器人一开始步数上限写死 6000 步，只能跑到 x≈259，于是 x>254 的所有组集体"看起来打不通"——上限必须按关卡长度给（现用 `240*40`）；(b) **新缺陷，留给后续**：3 格柱长按有 10 个阈值能"过"，靠的是 `LAND_TOL` 在下落途中把墙肩（top=2）当成可站面把人吸上去、随即起跳拿到 4.17 的顶点，这不是合法路线，本条按 tap 能否通过来判，`LAND_TOL` 墙肩吸附并入第 11 条延后清单 |
+| 17 | **Task 5 代码质量复查（第二阶段）查出关卡不可玩**：`portal_cube`/`speed_1x` 放在 y=1.0，触发框是 `[1, 3.6]`，而玩家贴地时框是 `[0,1]`——`overlap` 用严格不等号，`1 > 1` 不成立，**门永远不触发**。实测贴地跑过 x=253 仍是飞船模式，随后撞死在 x=264 的第一根尖刺；若一直按住飞（出口净空带 y∈[4,9]）则两扇门都错过，以 2x 飞过整个收尾段直接通关 | 一关最花心思的收尾要么撞死要么被白送；Task 12 回放机器人的 `SEGS`（假定 254 起 cube/1x）与实际对不上；Task 13 实玩会撞死在 x=264 | 两扇门改贴地（y=0.5，与 `portal_ship`/`speed_2x` 同一惯例），触发窗口 y∈(-0.5, 3.1)，松手落地的玩家必然命中。**残留缺口**：玩家在出口一直按住（y>3.1）仍会错过——Task 7 把 `portal_cube` 的触发框扩到通高时一并关掉。L3 里补了回归断言（贴地跑过门必须切成 cube 且降回 1x） |
+| 18 | `tests/assert.js` 的 `approx()`/`near()` 不拒绝 NaN：`err > tolPct` 对 NaN 恒为 false，**断言假绿**。实测把某段 `speed` 写成 `'2x'` → L2 算出的时长变成 NaN → L2 绿；`GD_Level.validate()` 又放行了这个关卡 → L1 也绿。一条写错的速度键名能同时骗过两条断言 | 数值类断言在最该报警的时候最安静；`validate()` 还漏检 `speed:99`、`from>to` 反向段、对象越过终点（实测 4 个坏关卡全部返回 `[]`），而硬规矩要求"输入校验只放在 `GD_Level.validate()` 这个边界上" | `approx`/`near` 开头加有限性检查（非 number 或非有限值直接抛错）；`validate()` 补 `VALID_SPEEDS` 白名单、`from>=to`、段落首尾相接且从 0 开始、对象不得越过 `endBlock` 四类检查；`expect_tests` 的门禁提示语按"少注册/多注册"分开说（原来一律说"有用例文件抛异常"，注册数**多于** N 时是误导） |
+| 19 | 文档与关卡实况脱节三处：①"段落边界与传送门 x 坐标严格相等（118 与 254）"是**错的**——传送门在玩家前沿（x+0.5）碰到门时才生效，实际切换点是 ≈111.5/115.5/252.5/253.5，与段落断点差 0.5 格；②计划的 Task 12 `replay.js` 代码块里障碍宽度还是 `c54f39d` 降级**之前**的（`[340, 3]`、`jumpOver(82, 3)`、`jumpOver(324, 3)`），照抄就会带着一份与关卡不符的障碍表；③`level.js` 的注释写"飞行 118–250"（段落到 254）、"回方块 254：门与降速同点"（门在 253、速度门在 254，不同点） | 错误断言会顺着 handoff 一路传下去：`tOf()` 按段表积分会整体偏 0.05 秒，后面每个起跳时刻都跟着偏，而这种偏很容易被误读成"关卡太难" | 计划与 handoff 里的措辞改成"段落边界与主题切换点对齐"，并附实际生效点对照表；`replay.js` 的 `tOf()` 改成**从关卡里的速度门推导档位**（不再抄第二份段表），障碍宽度同步成 2；`level.js` 的注释改成真实值。**顺带**：Task 13 原计划的 `git add -A` 与硬规矩"永远不要 `git add -A`"直接冲突，已改成点名 add |

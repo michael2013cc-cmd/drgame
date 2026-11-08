@@ -1,6 +1,5 @@
 window.GD_Level = (function () {
   var BPM = 154;
-  var BEAT_BLOCKS_1X = 10.386 * (60 / BPM);   // 4.046 格 = 一拍
 
   function spikeRun(startX, count, y) {
     var a = [];
@@ -16,7 +15,7 @@ window.GD_Level = (function () {
   }
 
   var objects = [].concat(
-    // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍
+    // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍（1 拍 = 4.046 格，8 格 = 1.98 拍）
     spikeRun(14, 1),
     spikeRun(22, 1),
     spikeRun(30, 2),
@@ -35,11 +34,11 @@ window.GD_Level = (function () {
     pillar(100, 2),
     spikeRun(106, 1),
 
-    // 切船 110–118
+    // 切船 110–118：门都贴着地面（y=0.5），与地面线齐平
     { x: 112, y: 0.5, t: 'portal_ship' },
     { x: 116, y: 0.5, t: 'speed_2x' },
 
-    // 飞行 118–250：上下柱阵通道。@2x 一拍走 12.914*0.3896 = 5.03 格
+    // 飞行 118–254：上下柱阵通道。@2x 一拍走 12.914*0.3896 = 5.03 格
     // 通道净空 4 格，玩家 1 格，容错 3 格
     pillar(126, 4), { x: 126, y: 8, t: 'block' }, { x: 126, y: 9, t: 'block' }, { x: 126, y: 10, t: 'block' },
     { x: 134, y: 0, t: 'block' }, { x: 134, y: 1, t: 'block' }, { x: 134, y: 7, t: 'block' }, { x: 134, y: 8, t: 'block' },
@@ -52,14 +51,22 @@ window.GD_Level = (function () {
     pillar(190, 4), { x: 190, y: 9, t: 'block' }, { x: 190, y: 10, t: 'block' },
     { x: 198, y: 0, t: 'block' }, { x: 198, y: 1, t: 'block' }, { x: 198, y: 8, t: 'block' },
     pillar(206, 5), { x: 206, y: 10, t: 'block' },
-    { x: 214, y: 0, t: 'block' }, { x: 214, y: 2, t: 'block' }, { x: 214, y: 7, t: 'block' },
+    { x: 214, y: 0, t: 'block' }, { x: 214, y: 1, t: 'block' }, { x: 214, y: 2, t: 'block' }, { x: 214, y: 7, t: 'block' },
     pillar(222, 3), { x: 222, y: 8, t: 'block' }, { x: 222, y: 9, t: 'block' },
     { x: 230, y: 0, t: 'block' }, { x: 230, y: 1, t: 'block' }, { x: 230, y: 9, t: 'block' },
     pillar(238, 4), { x: 238, y: 10, t: 'block' },
 
-    // 回方块 254：门与降速同点，段落边界与传送门位置严格一致
-    { x: 253, y: 1.0, t: 'portal_cube' },
-    { x: 254, y: 1.0, t: 'speed_1x' },
+    // 回方块：切船门在 x=112、降速门在 x=116，两扇门都贴地（y=0.5）。
+    // 触发点是玩家前沿（x+0.5）碰到门的 x，所以实际切换发生在 x≈111.5 / 115.5，
+    // 段落的 118 / 254 只是主题分段点——两者不是一回事，别再写成"严格相等"。
+    // 回方块这扇门同样必须贴地：触发框是 [y, y+2.6]，玩家贴地时框是 [0,1]，
+    // 门放在 y=1.0 时 1 > 1 不成立，门永远不触发——实测贴地跑过 x=253 仍是飞船模式，
+    // 随后撞死在 x=264 的第一根尖刺。y=0.5 的触发窗口是 y∈(-0.5, 3.1)，
+    // 松手落地的玩家必然命中。
+    // 残留缺口：玩家若在出口一直按住（y>3.1）仍会错过这扇门。Task 7 把
+    // portal_cube 的触发框扩到覆盖整条航道时一并关掉。
+    { x: 253, y: 0.5, t: 'portal_cube' },
+    { x: 254, y: 0.5, t: 'speed_1x' },
 
     // 收尾 258–360：密集节奏段
     spikeRun(264, 1),
@@ -75,11 +82,11 @@ window.GD_Level = (function () {
     spikeRun(330, 1),
     { x: 334, y: 2.4, t: 'ring_yellow' },
     spikeRun(340, 2),   // 三连刺打不过：y>=0.55 的窗口只有 3.49 格，三刺要 3.55
-    { x: 352, y: 0, t: 'finish' }
+    { x: 360, y: 0, t: 'finish' }   // 旗子与 endBlock 同点：越过 x=360 的瞬间判通关
   );
 
   var crossbeat = {
-    meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360, beatBlocks1x: BEAT_BLOCKS_1X },
+    meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360 },
     segments: [
       { from: 0,   to: 110, mode: 'cube', speed: 1, theme: 'blue'   },   // 10.591 s
       { from: 110, to: 118, mode: 'cube', speed: 1, theme: 'blue'   },   //  0.770 s  切船过渡
@@ -92,6 +99,8 @@ window.GD_Level = (function () {
 
   var VALID_TYPES = ['spike', 'block', 'pad_pink', 'pad_yellow', 'ring_pink', 'ring_yellow',
                      'portal_ship', 'portal_cube', 'speed_1x', 'speed_2x', 'speed_3x', 'speed_4x', 'finish'];
+  // 合法门速。写在这里而不是从 physics 读：level.js 是纯数据层，不能反向依赖物理层。
+  var VALID_SPEEDS = [0.5, 1, 2, 3, 4];
 
   function validate(lv) {
     var errs = [];
@@ -104,6 +113,10 @@ window.GD_Level = (function () {
         var o = lv.objects[i];
         if (typeof o.x !== 'number' || typeof o.y !== 'number') errs.push('对象缺 x/y: #' + i);
         if (VALID_TYPES.indexOf(o.t) < 0) errs.push('未知类型: ' + o.t + ' #' + i);
+        // 对象不能落在终点之后：那样它永远不会被玩家碰到，等于白放一个障碍
+        if (lv.meta && typeof lv.meta.endBlock === 'number' && o.x > lv.meta.endBlock) {
+          errs.push('对象越过终点: ' + o.t + '@' + o.x);
+        }
       }
     }
     if (lv.segments) {
@@ -111,6 +124,19 @@ window.GD_Level = (function () {
         var sg = lv.segments[s];
         if (['cube', 'ship'].indexOf(sg.mode) < 0) errs.push('非法 mode: ' + sg.mode);
         if (typeof sg.from !== 'number' || typeof sg.to !== 'number') errs.push('段落缺 from/to #' + s);
+        else {
+          if (sg.to <= sg.from) errs.push('段落 from>=to #' + s + ' (' + sg.from + '→' + sg.to + ')');
+          if (VALID_SPEEDS.indexOf(sg.speed) < 0) errs.push('非法 speed: ' + sg.speed + ' #' + s);
+        }
+      }
+      // 段落必须首尾相接且从 0 开始：Task 12 的 tOf() 按段落做分段积分，
+      // 段落之间留缝会让"到达 x 的时刻"整体算偏。
+      if (lv.segments.length && lv.segments[0].from !== 0) errs.push('第一个段落必须从 0 开始');
+      for (var k = 1; k < lv.segments.length; k++) {
+        if (lv.segments[k].from !== lv.segments[k - 1].to) {
+          errs.push('段落不连续: #' + (k - 1) + ' 结束于 ' + lv.segments[k - 1].to +
+                    '，#' + k + ' 从 ' + lv.segments[k].from + ' 开始');
+        }
       }
     }
     return errs;
