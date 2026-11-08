@@ -30,10 +30,10 @@ window.GD_Physics = (function () {
       // 飞船爬升被 CONST.SHIP.CAP_UP 钳在 16 格/s；玩家在切船门 x=111.5 时还贴着地面（y≈0），
       // 到回方块门 x=252.5 最多有 (252.5−111.5)/10.386 = 13.6 s（按最慢的 1x 算）
       // → 最多爬 217 格。256 盖得住（余量约 39 格）；24 盖不住——
-      // 实测从 x=111.5 起按住不放，x=252.4 时 y=177.83，两扇门（框 [0.5,24.5]）都够不着，
-      // 玩家以飞船 2x 直接飞过整个收尾段通关。
-      // 注意这仍然只是**上界**：关卡的飞船段没有封顶，玩家理论上还能飞到 y≥256.5 错过门，
-      // 那个洞记在 spec §13（要靠关卡封顶解决，不是靠门框）。
+      // **封顶之前**实测从 x=111.5 起按住不放，x=252.4 时 y=177.83，
+      // 两扇门（框 [0.5,24.5]）都够不着，玩家以飞船 2x 直接飞过整个收尾段通关。
+      // 现在关卡**已经封顶**（天花板 y=9，见 spec §13 第 11 条），飞船最高只到 8.72，
+      // 限高的是天花板不是门框——256 这个数是按上界取的，留着余量没有坏处。
       // 框的底边仍是门的 y：地面上的玩家（框 [0,1]）能吃到 y=0.5 的门
       // （框 [0.5,256.5]，1 > 0.5 成立）；不要把底边也改成 0——
       // 那会让悬在半空的门被地面上的玩家触发，语义就错了。
@@ -261,6 +261,7 @@ window.GD_Physics = (function () {
   }
 
   // 供测试用：平地起跳的实测。起点在起跳那一步之前，否则滞空与跳距各少算一步 dt。
+  // 键名跟 spec §12 对齐：apexBlocks / spanBlocks（"格"是单位，名字里要看得出来）。
   function measureJump(speedKey) {
     var st = create({
       segments: [{ from: 0, to: 1e9, mode: 'cube', speed: 1 }],
@@ -276,7 +277,7 @@ window.GD_Physics = (function () {
       n++;
     }
     if (n >= 2000) throw new Error('measureJump: 2000 步内未落地，测量被截断');
-    return { airtime: st.time - t0, apex: apex, span: st.x - x0 };
+    return { airtime: st.time - t0, apexBlocks: apex, spanBlocks: st.x - x0 };
   }
 
   return { CONST: CONST, create: create, step: step, measureJump: measureJump, respawn: respawn };

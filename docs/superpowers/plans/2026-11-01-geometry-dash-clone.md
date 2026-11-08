@@ -79,7 +79,7 @@ Verlet 对恒定加速度**解析精确**：解析顶点 v0²/(2g) = 2.173781，
 **Step A — 起静态服务**（只需一次，跨任务复用；后台运行）
 
 ```bash
-cd "C:/Users/user/Documents/My Games/drgame" && python -m http.server 8765 --bind 127.0.0.1
+cd "C:/Users/user/Documents/My Games/drgame" && python -m http.server 8766 --bind 127.0.0.1
 ```
 
 用 Bash 工具的 `run_in_background: true`。预期：进程存活，无输出即正常。
@@ -88,7 +88,7 @@ cd "C:/Users/user/Documents/My Games/drgame" && python -m http.server 8765 --bin
 
 **Step B — 打开测试页**
 
-MCP 调用 `mcp__browser-use__navigate_page`，`url = http://127.0.0.1:8765/tests/harness.html`。
+MCP 调用 `mcp__browser-use__navigate_page`，`url = http://127.0.0.1:8766/tests/harness.html`。
 
 **每次都要加一个全新的查询串**（`?v=task3`、`?v=task4`……）。`python -m http.server` 会回 304，浏览器命中缓存时读到的是**上一版的 `harness.html`**，实测过一次：门禁数字没更新，凭空多出一条 `FAIL 用例注册数`，看着像实现的 bug 其实是缓存。改完文件再跑，若 `registered` 或 `loadErrors` 和磁盘上的内容不一致，先怀疑缓存，别怀疑代码。
 
@@ -269,7 +269,7 @@ GD_ASSERT.test('S2 断言失败能被捕获', function () {
 预期返回：
 
 ```json
-{ "ready": true, "r": { "pass": 2, "fail": 0, "registered": 2, "log": ["PASS S1 脚手架可用", "PASS S2 断言失败能被捕获"], "loadErrors": ["http://127.0.0.1:8765/level.js", "http://127.0.0.1:8765/physics.js", "http://127.0.0.1:8765/tests/physics.test.js", "http://127.0.0.1:8765/tests/replay.js", "http://127.0.0.1:8765/tests/replay.test.js"], "runErrors": [] } }
+{ "ready": true, "r": { "pass": 2, "fail": 0, "registered": 2, "log": ["PASS S1 脚手架可用", "PASS S2 断言失败能被捕获"], "loadErrors": ["http://127.0.0.1:8766/level.js", "http://127.0.0.1:8766/physics.js", "http://127.0.0.1:8766/tests/physics.test.js", "http://127.0.0.1:8766/tests/replay.js", "http://127.0.0.1:8766/tests/replay.test.js"], "runErrors": [] } }
 ```
 
 `loadErrors` 里会有 5 条 404（level.js / physics.js / physics.test.js / replay.js / replay.test.js），**这是本任务的预期状态**，从 Task 2 起逐条减少。若 `loadErrors` 是空数组，说明 `<head>` 里的监听器又挂晚了或被移走——这是个静默失效的坑，必须修好再继续。
@@ -301,8 +301,8 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "
 GD_ASSERT.test('T1 方块跳跃常数', function () {
   var m = GD_Physics.measureJump(1);
   GD_ASSERT.approx(m.airtime, 0.389, 0.02, '滞空秒');
-  GD_ASSERT.approx(m.apex, 2.17, 0.02, '顶点格');
-  GD_ASSERT.approx(m.span, 4.04, 0.02, '@1x 跳距格');
+  GD_ASSERT.approx(m.apexBlocks, 2.17, 0.02, '顶点格');
+  GD_ASSERT.approx(m.spanBlocks, 4.04, 0.02, '@1x 跳距格');
   // 积分器指纹：上面三条的 2% 相对容差**拦不住**半隐式欧拉。
   // 实测（dt=1/240, v0=22.36, g=115）三种积分的顶点：
   //   velocity-Verlet    2.173668  （对 2.17 偏差 0.17%，对解析值 v0²/(2g)（由 CONST 现算）偏差 0.005%）
@@ -311,7 +311,7 @@ GD_ASSERT.test('T1 方块跳跃常数', function () {
   // 容差下限 2.17×0.98 = 2.1266，欧拉·先减速度 距它只差 0.0008 格。
   // 所以必须再钉一条绝对精度：Verlet 距解析顶点 0.00011，两种欧拉各差约 0.046，
   // 0.002 的绝对容差把两者都关在外面，且不会因浮点噪声误红。
-  GD_ASSERT.near(m.apex,
+  GD_ASSERT.near(m.apexBlocks,
     GD_Physics.CONST.JUMP_V0 * GD_Physics.CONST.JUMP_V0 / (2 * GD_Physics.CONST.G),
     0.002, 'Verlet 积分指纹');
 });
@@ -363,10 +363,10 @@ window.GD_Physics = (function () {
       // 飞船爬升被 CONST.SHIP.CAP_UP 钳在 16 格/s；玩家在切船门 x=111.5 时还贴着地面（y≈0），
       // 到回方块门 x=252.5 最多有 (252.5−111.5)/10.386 = 13.6 s（按最慢的 1x 算）
       // → 最多爬 217 格。256 盖得住（余量约 39 格）；24 盖不住——
-      // 实测从 x=111.5 起按住不放，x=252.4 时 y=177.83，两扇门（框 [0.5,24.5]）都够不着，
-      // 玩家以飞船 2x 直接飞过整个收尾段通关。
-      // 注意这仍然只是**上界**：关卡的飞船段没有封顶，玩家理论上还能飞到 y≥256.5 错过门，
-      // 那个洞记在 spec §13（要靠关卡封顶解决，不是靠门框）。
+      // **封顶之前**实测从 x=111.5 起按住不放，x=252.4 时 y=177.83，
+      // 两扇门（框 [0.5,24.5]）都够不着，玩家以飞船 2x 直接飞过整个收尾段通关。
+      // 现在关卡**已经封顶**（天花板 y=9，见 spec §13 第 11 条），飞船最高只到 8.72，
+      // 限高的是天花板不是门框——256 这个数是按上界取的，留着余量没有坏处。
       // 框的底边仍是门的 y：地面上的玩家（框 [0,1]）能吃到 y=0.5 的门
       // （框 [0.5,256.5]，1 > 0.5 成立）；不要把底边也改成 0——
       // 那会让悬在半空的门被地面上的玩家触发，语义就错了。
@@ -594,6 +594,7 @@ window.GD_Physics = (function () {
   }
 
   // 供测试用：平地起跳的实测。起点在起跳那一步之前，否则滞空与跳距各少算一步 dt。
+  // 键名跟 spec §12 对齐：apexBlocks / spanBlocks（"格"是单位，名字里要看得出来）。
   function measureJump(speedKey) {
     var st = create({
       segments: [{ from: 0, to: 1e9, mode: 'cube', speed: 1 }],
@@ -609,7 +610,7 @@ window.GD_Physics = (function () {
       n++;
     }
     if (n >= 2000) throw new Error('measureJump: 2000 步内未落地，测量被截断');
-    return { airtime: st.time - t0, apex: apex, span: st.x - x0 };
+    return { airtime: st.time - t0, apexBlocks: apex, spanBlocks: st.x - x0 };
   }
 
   return { CONST: CONST, create: create, step: step, measureJump: measureJump, respawn: respawn };
@@ -685,7 +686,7 @@ GD_ASSERT.test('T2 五档门速与速度门切换', function () {
 
 GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
   var m1 = GD_Physics.measureJump(1), m2 = GD_Physics.measureJump(2);
-  GD_ASSERT.approx(m2.span / m1.span, 1.243, 0.03, '跳距倍率');
+  GD_ASSERT.approx(m2.spanBlocks / m1.spanBlocks, 1.243, 0.03, '跳距倍率');
   // 滞空与水平速度**完全无关**：竖直轨迹只有 v0 和 g，落地步数一模一样。
   // spec §4.1 说原版 0.389 → 0.398 微变，那是原版按帧子步的产物；我们的定步长
   // 实现是解析相等，所以这里钉成精确相等，不要写成 1.023 那种"看着像"的比值。
@@ -831,7 +832,7 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
 
 ```js
 GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
-  var span = GD_Physics.measureJump(1).span;      // 用实测跳距，不硬编码
+  var span = GD_Physics.measureJump(1).spanBlocks;      // 用实测跳距，不硬编码
   // 起跳点取"距墙半跳"而不是"距墙一整跳"。一整跳起跳会让人**落在墙上**而不是跳过墙：
   // 实测 6-span≈1.93 起跳时，下落途中 x=5.50 处 LAND_TOL 先把第 1 格的顶（y=1）
   // 当成可站面，把玩家吸到 y=1，等于钻进第 2 格内部，随后被缩小框判死。
@@ -948,7 +949,18 @@ GD_ASSERT.test('L3 对象不越界、无重复、尖刺不重叠、门框不压�
   // 以前这里没有封顶：实测从切船门起一直按住能爬到 y=46.55，从柱阵顶上飞过整个
   // 飞船段，还能以 2x 直接飞过收尾段通关（spec §13 第 11 条）——关卡 1/3 的挑战是空的。
   // 天花板挡在 y=9 之后，飞船最高只到 8.72，按住不放会在 x≈120 撞顶死。
-  var CEIL_Y = 9, CEIL_X0 = 118, CEIL_X1 = 252;
+  // 天花板的范围**现算**，不写死：起点取飞船段的起点，终点取"回方块门"的前一格。
+  // 写死的话关卡一改段落边界，这条断言就拿旧范围去比新数据，测不出任何东西。
+  var shipSeg = null;
+  for (var ss = 0; ss < lv.segments.length; ss++) {
+    if (lv.segments[ss].mode === 'ship') { shipSeg = lv.segments[ss]; break; }
+  }
+  GD_ASSERT.ok(shipSeg, '关卡里必须有飞船段（segments[2]）');
+  var cubeGate = objs.filter(function (o) { return o.t === 'portal_cube'; })[0];
+  GD_ASSERT.ok(cubeGate, '关卡里必须有回方块门');
+  var CEIL_Y = 9;
+  var CEIL_X0 = shipSeg.from;        // 飞船段起点：118 之前玩家还是方块，天花板用不上
+  var CEIL_X1 = cubeGate.x - 1;      // 回方块门在 x=253，天花板铺到 252 才不压门框
   var ceilAt = Object.create(null);
   for (var ci = 0; ci < objs.length; ci++) {
     if (objs[ci].t === 'block' && objs[ci].y === CEIL_Y) ceilAt[objs[ci].x] = true;
@@ -958,6 +970,17 @@ GD_ASSERT.test('L3 对象不越界、无重复、尖刺不重叠、门框不压�
   GD_ASSERT.ok(ceilGaps.length === 0,
     '飞船段天花板必须连续（x∈[' + CEIL_X0 + ',' + CEIL_X1 + '] 每格一块），缺口 ' +
     ceilGaps.length + ' 处: ' + ceilGaps.slice(0, 8).join(','));
+
+  // 反向断言：天花板**只**该铺在 [CEIL_X0, CEIL_X1] 里。
+  // 上面那条（区间内每格都有）是单向的——区间外多铺的块它根本查不到
+  // （实测在 x=260 补一块 y=9，原来的断言照样全绿）。
+  var ceilOut = [];
+  for (var co = 0; co < objs.length; co++) {
+    if (objs[co].t === 'block' && objs[co].y === CEIL_Y &&
+        (objs[co].x < CEIL_X0 || objs[co].x > CEIL_X1)) ceilOut.push(objs[co].x);
+  }
+  GD_ASSERT.ok(ceilOut.length === 0,
+    '天花板只应铺在 x∈[' + CEIL_X0 + ',' + CEIL_X1 + ']，越界的块: ' + ceilOut.join(','));
 
   // 行为层：按住不放也飞不过顶，更不可能以飞船状态通关。
   var holdSt = GD_Physics.create(lv);
@@ -1069,8 +1092,10 @@ window.GD_Level = (function () {
     // 随后撞死在 x=264 的第一根尖刺。
     // Task 7 把触发框改成了**通高**（GATE_H = 256 格，框是 [0.5, 256.5]）：
     // 通道内的玩家（y≲11）和出口前一小段内起飞的人都能命中。
-    // 但这**不是**"飞到多高都不会错过"——飞船段没有封顶，玩家理论上能飞到 y≥256.5
-    // 仍会错过这扇门（那个洞记在 spec §13，要靠关卡封顶解决，不是靠门框）。
+    // 但这**不是**"飞到多高都不会错过"——**封顶之前**飞船段没有天花板，
+    // 玩家理论上能飞到 y≥256.5 仍会错过这扇门。
+    // 现在那个洞**已经关了**：飞船段有天花板（y=9，见上面的 ceiling()），
+    // 飞船最高只到 8.72，不可能飞到门框外面去。
     // 门的底边仍是 0.5——不能改成 0，否则悬在半空的门会被地面上的玩家触发，语义就错了。
     { x: 253, y: 0.5, t: 'portal_cube' },
     { x: 254, y: 0.5, t: 'speed_1x' },
@@ -1982,7 +2007,7 @@ Task 8 落地时是 20，Task 12 加 T3 后是 21，下面这块按**当前**文
   var waited = 0;
   (function wait() {
     if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
-      GD_ASSERT.expect_tests(21);
+      GD_ASSERT.expect_tests(29);
       var res = GD_ASSERT.run();
       res.loadErrors = window.__LOAD_ERRORS__ || [];
       res.runErrors = window.__RUN_ERRORS__ || [];
@@ -2083,9 +2108,10 @@ collide 的玩家框改成每轮重算（同一帧不再有两套玩家框），
 
 **纵向相机（Task 9 补做）**：关卡的飞船段通道设计到 y=10，而画布地面线以上只有 **5.8 格**
 （`VIS_TOP = GROUND_Y / BLK`；地面线画在 y=174，它上面一共 174px = 5.8 格）——
-通道的天花板本来就在画面外；再加上飞船段没有封顶（玩家能飞到 y=46，见 spec §13 第 11 条），
-固定相机会让玩家**整个飞出画面**：用仓库里那条已验证的通关序列实测，飞船段 2639 帧里
-有 2227 帧（84.4%）玩家的 y 超过 5.8 格，屏幕上什么都没有。
+通道的天花板本来就在画面外；再加上当时飞船段还没封顶（Task 9.5 补封了，见 spec §13 第 11 条），
+固定相机会让玩家**整个飞出画面**：用当时那条通关序列实测（该序列从柱阵顶上飞过去，
+封顶后已作废），飞船段 2639 帧里有 2227 帧（84.4%）玩家的 y 超过 5.8 格，屏幕上什么都没有。
+**封顶之后**同一段只剩 365 帧（13.8%）超出画面（飞船最高 8.72 格），相机仍然必要，只是没那么极端。
 所以渲染层要带**纵向相机**：
 
 - 相机状态是**渲染实例的字段** `r.camY`（跟 `wasAlive` 一样），**不许做成模块级变量**——多实例会串状态。
@@ -2130,22 +2156,26 @@ window.GD_Render = (function () {
     var ctx = canvas.getContext('2d');
     // wasAlive 必须是实例字段而非模块级变量，否则多实例/重开测试会串状态
     // camY（纵向相机）同理：它是"这个渲染实例正在看哪一段"，两个实例各看各的
-    return { canvas: canvas, ctx: ctx, parts: [], debris: [], wasAlive: true, camY: 0 };
-  }
-
-  function resize(canvas) {
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
-    var availW = Math.max(320, window.innerWidth - 16);
-    var availH = Math.max(180, window.innerHeight - 16);
-    var k = Math.max(1, Math.floor(Math.min(availW / LW, availH / LH)));
-    canvas.style.width = (LW * k) + 'px';
-    canvas.style.height = (LH * k) + 'px';
-    canvas.width = Math.round(LW * k * dpr);
-    canvas.height = Math.round(LH * k * dpr);
-    var ctx = canvas.getContext('2d');
-    ctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    return k;
+    var r = { canvas: canvas, ctx: ctx, parts: [], debris: [], wasAlive: true, camY: 0 };
+    // resize 做成**实例方法**而不是模块级函数：它改的是"这个实例的画布"的后备存储与缩放比。
+    // 做成模块级函数就得多收一遍 canvas 参数，传错实例时会把别的画布的缩放改掉——
+    // 而这个错误在画面上根本看不出来（两个画布长得一模一样）。
+    r.resize = function () {
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      var availW = Math.max(320, window.innerWidth - 16);
+      var availH = Math.max(180, window.innerHeight - 16);
+      var k = Math.max(1, Math.floor(Math.min(availW / LW, availH / LH)));
+      r.canvas.style.width = (LW * k) + 'px';
+      r.canvas.style.height = (LH * k) + 'px';
+      r.canvas.width = Math.round(LW * k * dpr);
+      r.canvas.height = Math.round(LH * k * dpr);
+      // 改 canvas.width/height 会把 2D 上下文的全部状态清掉（变换矩阵也在内），
+      // 所以 setTransform 必须在尺寸设好**之后**再设一次。
+      r.ctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0);
+      r.ctx.imageSmoothingEnabled = false;
+      return k;
+    };
+    return r;
   }
 
   function themeOf(st) {
@@ -2163,8 +2193,8 @@ window.GD_Render = (function () {
 
   // 纵向相机（死区跟随）。
   // 为什么必须有：关卡的飞船段通道设计到 y=10，而画布地面线以上只有 5.8 格——
-  // 通道的天花板本来就在画面外；再加上飞船段没有封顶（玩家能飞到 y=46，见 spec §13），
-  // 固定相机会让玩家**整个飞出画面**，玩家根本看不见自己在哪。
+  // 通道的天花板本来就在画面外，固定相机会让玩家**整个飞出画面**，玩家根本看不见自己在哪。
+  // （封顶之前更糟：飞船段没有天花板，玩家能飞到 y=46，现在封顶了最高也只有 8.72。）
   // 死区而不是直接跟随：直接跟随的话方块段每跳一下画面就抖一下。
   function updateCamera(r, st) {
     var rel = st.y - r.camY;
@@ -2208,10 +2238,16 @@ window.GD_Render = (function () {
     ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2; ctx.strokeRect(px + 1, py + 1, BLK - 2, BLK - 2);
   }
 
-  function spike(ctx, r, st, x, y, C) {
+  function spike(ctx, r, st, x, y) {
     var px = wx(st, x), py = wy(r, y);
-    ctx.fillStyle = C.fill; ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2;
+    ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + BLK, py); ctx.lineTo(px + BLK / 2, py - BLK); ctx.closePath();
+    // 内部近黑渐变（spec §8）：平涂实色在深色背景上看不出立体感，
+    // "白描边 + 内部近黑渐变"才是原版的观感。渐变轴跟着世界走（两端都用 wy 定位）。
+    var g = ctx.createLinearGradient(px, py - BLK, px, py);
+    g.addColorStop(0, '#0b1a28');
+    g.addColorStop(1, '#01060c');
+    ctx.fillStyle = g;
     ctx.fill(); ctx.stroke();
   }
 
@@ -2248,7 +2284,7 @@ window.GD_Render = (function () {
       var sx = wx(st, o.x);
       if (sx < -BLK * 2 || sx > LW + BLK * 2) continue;
       if (o.t === 'block') block(ctx, r, st, o.x, o.y, C);
-      else if (o.t === 'spike') spike(ctx, r, st, o.x, o.y, C);
+      else if (o.t === 'spike') spike(ctx, r, st, o.x, o.y);
       else if (o.t === 'pad_pink' || o.t === 'pad_yellow') {
         rect(ctx, sx, wy(r, o.y) - 5, BLK, 5, o.t === 'pad_pink' ? '#ff5fa8' : '#ffd23f');
       }
@@ -2350,7 +2386,7 @@ window.GD_Render = (function () {
     if (st.alive) player(ctx, r, st);
   }
 
-  return { create: create, resize: resize, draw: draw, LW: LW, LH: LH, BLK: BLK, GROUND_Y: GROUND_Y };
+  return { create: create, draw: draw, LW: LW, LH: LH, BLK: BLK, GROUND_Y: GROUND_Y };
 })();
 ```
 
@@ -2374,7 +2410,7 @@ window.GD_Render = (function () {
   实现上是一边跑一边画，不是最后画一帧：拖尾是"每次 draw 播一个粒子、0.5 秒渐隐"的，
   只在最后画一帧的话拖尾只剩 1 个粒子，Step 4 的第 7 项（渐隐拖尾）根本核对不出来。
 
-  看哪一帧（静态服务在 http://127.0.0.1:8765/）：
+  看哪一帧（静态服务在 http://127.0.0.1:8766/）：
     /tests/visual-smoke.html            默认：跑 3 秒真实物理 → 方块段 x≈31（尖刺、拖尾）
     /tests/visual-smoke.html?t=6        跑到第 6 秒 → 方块段 x≈62（方块柱、跳环）
     /tests/visual-smoke.html?t=9        跑到第 9 秒 → 方块段 x≈93
@@ -2423,7 +2459,7 @@ if (q.has('x')) {
 
 - [ ] **Step 3: 跑 3 秒物理后截图**
 
-`navigate_page` 到 `http://127.0.0.1:8765/tests/visual-smoke.html`，然后 `take_screenshot`。
+`navigate_page` 到 `http://127.0.0.1:8766/tests/visual-smoke.html`，然后 `take_screenshot`。
 冒烟页默认就是"跑 3 秒真实物理并逐帧绘制"；要看别的段就加参数
 （`?t=12` 飞船段、`?t=20.8` 飞船段玩家与柱阵同框、`?t=10.5` 切船门、`?t=21.6` 回方块门、
 `?x=180` 直接摆位置，全部列在 `tests/visual-smoke.html` 顶部的注释里）。
@@ -2444,9 +2480,9 @@ if (q.has('x')) {
    符号（`▲▼` / `■` / `»`）钉在柱身上看得见。
    （`?t=10.5` 看切船门与 2x 速度门，`?t=21.6` 看回方块门与 1x 速度门）
 9. **飞船段玩家是三角形**（1 格见方、朝上），不是方块，而且**三角形玩家要和通道的柱阵同框**
-   （`?t=20.8`：玩家 y=4.70 在地面线附近，柱列 x=238 在画面里）。
-10. **纵向相机跟随**：飞船段玩家始终在画面内——他飞到 y=14（`?t=12`）甚至 y=46 时，
-    截图里都要看得见玩家（没有相机时这 84% 的帧玩家整个在画面外）。
+   （`?t=20.8`：玩家 y=3.91，柱列 x=238 在画面里）。
+10. **纵向相机跟随**：飞船段玩家始终在画面内——他飞到 y=5.18（`?t=12`）、y=6.51（序列里的最高点）时，
+    截图里都要看得见玩家（封顶前没有相机时，这一段 84% 的帧玩家整个在画面外）。
 
 - [ ] **Step 5: Commit**
 
@@ -2470,6 +2506,8 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add render.js tests/visual-s
 - Modify: `docs/superpowers/research/t12-replay-fixture.js`（重新生成）
 
 ### 为什么
+
+（下面写的是**封顶之前**的状态，用来解释为什么要有这一节。）
 
 飞船段 118–254 是"上下柱阵通道"，但它**根本没有天花板**：实测玩家按住不放能爬到 **y=46.55** 格，
 预研那条"已验证通关"的序列就是**从柱阵顶上飞过去的**（y=14~46 格），根本没考验过通道。后果：
@@ -2576,11 +2614,16 @@ window.GD_Hud = (function () {
     var ay = GROUND_Y - (3 - camY) * BLK;
     if (ax > -80 && ax < LW) ctx.fillText('Attempt ' + st.attempt, ax, ay);
 
-    // 进度条是屏幕固定的，所以不过相机
+    // 进度条是屏幕固定的，所以不过相机。
+    // 圆角（spec §8「底部居中半透明圆角进度条」）：用 roundRect 而不是
+    // fillRect+strokeRect，直角条和原版观感差得一眼能看出来。
     var bw = 340, bx = (LW - bw) / 2, by = LH - 14;
-    ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(bx, by, bw, 7);
-    ctx.fillStyle = '#4cd137'; ctx.fillRect(bx, by, bw * st.percent / 100, 7);
-    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, 6);
+    ctx.fillStyle = 'rgba(255,255,255,.18)';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw, 7, 3.5); ctx.fill();
+    ctx.fillStyle = '#4cd137';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw * st.percent / 100, 7, 3.5); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(bx + 0.5, by + 0.5, bw - 1, 6, 3); ctx.stroke();
     ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
     ctx.fillText(Math.floor(st.percent) + '%', LW / 2, by - 3);
     ctx.textAlign = 'left';
@@ -2619,22 +2662,42 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add hud.js tests/visual-smok
 
 ```js
 window.GD_Input = (function () {
-  var held = false;
-  function set(v) { held = v; }
-  function create(target) {
-    target.addEventListener('pointerdown', function (e) { e.preventDefault(); set(true); });
-    window.addEventListener('pointerup', function () { set(false); });
-    window.addEventListener('pointercancel', function () { set(false); });
-    window.addEventListener('keydown', function (e) {
-      if (e.code === 'Space' || e.key === ' ') { e.preventDefault(); set(true); }
+  // 输入状态按**来源**分开记，不是一个布尔量。
+  // 为什么：玩家完全可能同时按住鼠标和空格（另一只手的手指、或者鼠标+键盘一起）。
+  // 任何一个来源松开都不该把整体状态清掉——旧的单个 held 布尔量里
+  // keyup 与 pointerup 都无条件写 false，于是"按着鼠标 + 按空格 + 松开空格"
+  // 会让整局失去输入（实测 held 直接变 false），飞船段表现为"明明按着却往下掉"。
+  //
+  // create(target, env)：
+  // env 缺省是 { win: window, doc: document }。留这个口子的理由：
+  // 上面这条"多来源同时按住"的语义必须能被自动化测试驱动，而真实 DOM 事件
+  // 在无头环境里造不出来；注入事件源之后，测试跑的是**同一份**生产代码，
+  // 不是照着抄一遍的仿制品（仿制品会跟实现一起漂移，测了等于没测）。
+  function create(target, env) {
+    env = env || { win: window, doc: document };
+    var win = env.win, doc = env.doc;
+    var src = { key: false, pointer: false, touch: false };
+    function held() { return src.key || src.pointer || src.touch; }
+    function clearAll() { src.key = false; src.pointer = false; src.touch = false; }
+
+    target.addEventListener('pointerdown', function (e) { e.preventDefault(); src.pointer = true; });
+    win.addEventListener('pointerup', function () { src.pointer = false; });
+    win.addEventListener('pointercancel', function () { src.pointer = false; });
+    win.addEventListener('keydown', function (e) {
+      if (e.code === 'Space' || e.key === ' ') { e.preventDefault(); src.key = true; }
     });
-    window.addEventListener('keyup', function (e) {
-      if (e.code === 'Space' || e.key === ' ') set(false);
+    win.addEventListener('keyup', function (e) {
+      if (e.code === 'Space' || e.key === ' ') src.key = false;
     });
-    window.addEventListener('blur', function () { set(false); });   // 防止回来时飞船一直上升
-    document.addEventListener('touchstart', function (e) { e.preventDefault(); set(true); }, { passive: false });
-    document.addEventListener('touchend', function () { set(false); }, { passive: true });
-    return { get: function () { return held; } };
+    // 失焦时三个来源全清：切走窗口时浏览器未必派发 pointerup/keyup，
+    // 只清一个来源会留下"幽灵按住"，回来之后飞船一直上升。
+    win.addEventListener('blur', function () { clearAll(); });
+    doc.addEventListener('touchstart', function (e) { e.preventDefault(); src.touch = true; }, { passive: false });
+    doc.addEventListener('touchend', function () { src.touch = false; }, { passive: true });
+    // touchcancel 也要清：手指在屏幕上被系统打断时不会派发 touchend，
+    // 不清的话 touch 来源会永远按着（和旧实现同样的幽灵按住，只是换了来源）。
+    doc.addEventListener('touchcancel', function () { src.touch = false; }, { passive: true });
+    return { get: held };
   }
   return { create: create };
 })();
@@ -2710,16 +2773,34 @@ window.GD_Audio = (function () {
     s.connect(f); env(f, t, dur, peak); s.start(t);
   }
 
+  // 调度器只排"还没过期"的音符。
+  // 为什么：Chrome 把后台标签页的 setInterval 压到约 1 Hz，回调再跑时 nextNote
+  // 可能落后几十秒（实测后台 30 s 后第一次回调要补 606 个音符，其中 601 个时间点在过去）。
+  // WebAudio 的 start(t) 在 t <= currentTime 时等于"立刻响"，于是这一批过期音会在
+  // 同一瞬间炸响、几百个节点同时启动——听起来是"炸响一声"，机器上是几百个节点。
+  // 所以过期的音**只走相位**（step16++），不建节点。
+  // 相位必须照旧前进：节拍网格锚在启动时的 ctx.currentTime 上，
+  // 丢音不等于丢拍子——否则整首曲子的强弱规律会从头再来一遍。
   function schedule() {
-    while (nextNote < ctx.currentTime + 0.15) {
+    var now = ctx.currentTime;
+    // 落后太多时（后台标签页）不要一格一格补：直接跳到"现在"，
+    // 但 step16 必须按跳过的格数同步前进，否则乐曲的强弱规律会错位。
+    if (nextNote < now) {
+      var skipped = Math.ceil((now - nextNote) / (SPB / 4));
+      nextNote += skipped * (SPB / 4);
+      step16 += skipped;
+    }
+    while (nextNote < now + 0.15) {
       var i = step16 % 64, t = nextNote;
-      if (KICK[i]) hit(t, 120, 0.13, 0.55);
-      if (SNARE[i]) noise(t, 0.11, 0.22);
-      if (HAT[i]) noise(t, 0.03, i % 2 ? 0.05 : 0.09);
-      if (BASS[i]) {
-        var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(bassFreq(BASS[i]), t);
-        var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
-        o.connect(lp); env(lp, t, SPB * 0.45, 0.16); o.start(t); o.stop(t + SPB * 0.5);
+      if (t >= now) {                      // 过期音不排（见上面的注释）
+        if (KICK[i]) hit(t, 120, 0.13, 0.55);
+        if (SNARE[i]) noise(t, 0.11, 0.22);
+        if (HAT[i]) noise(t, 0.03, i % 2 ? 0.05 : 0.09);
+        if (BASS[i]) {
+          var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(bassFreq(BASS[i]), t);
+          var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
+          o.connect(lp); env(lp, t, SPB * 0.45, 0.16); o.start(t); o.stop(t + SPB * 0.5);
+        }
       }
       nextNote += SPB / 4; step16++;
     }
@@ -2757,6 +2838,10 @@ window.GD_Audio = (function () {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
     } catch (e) { return; }   // 失败则静音继续，不阻塞游戏（spec §11.1）
     nextNote = ctx.currentTime + 0.05;
+    // step16 必须归零：它记的是"乐曲走到了第几个 16 分音符"。
+    // 不归零的话，stop() 之后重新 start 会从上一句的中间接着响——
+    // 而关卡每次死亡重开都是从 attempt 1 重来的，玩家听到的应该是同一段乐曲的开头。
+    step16 = 0;
     timer = setInterval(schedule, 25);
     started = true;
     wake();
@@ -2780,9 +2865,52 @@ window.GD_Audio = (function () {
 window.GD_Main = (function () {
   var DT = GD_Physics.CONST.DT, MAX_FRAME = 0.05;   // 切后台钳制（spec §11.2）
 
+  // 回放时一帧推几个物理步。
+  // 为什么不是 1：整关回放要 7695 个物理步，一步一帧就是 7695 帧 ≈ 128 秒墙钟。
+  // 8 步/帧 ≈ 962 帧 ≈ 16 秒。
+  var FEED_STEPS_PER_FRAME = 8;
+
+  // 回放驱动器：每次 frame() 推一帧（FEED_STEPS_PER_FRAME 个物理步）。
+  // 为什么拆成"可一帧一帧手动驱动"：自动化断言是同步的，而 feed() 返回 Promise——
+  // 无头环境里没法 await 一个同步断言。拆成驱动器之后，测试用同一个驱动器
+  // 同步跑完整关，浏览器端再由 requestAnimationFrame 驱动同一份逻辑。
+  function replayDriver(st, seq) {
+    var idx = 0, held = false, guard = 0, done = false, died = null;
+    function frame() {
+      if (done) return false;
+      for (var s = 0; s < FEED_STEPS_PER_FRAME; s++) {
+        while (idx < seq.length && st.time >= seq[idx].at) { held = seq[idx].down === true; idx++; }
+        GD_Physics.step(st, held);
+        if (!st.alive) { died = { x: st.x, y: st.y, attempt: st.attempt }; break; }
+      }
+      // 死亡期间 st.time 不推进，必须用帧数兜底，否则永远不会结束。
+      // 但玩家已经死了就没必要再死等（原来是等满 240*45 帧 ≈ 3 分钟）：立刻收工并带走死亡信息。
+      // 注意**不以"按键序列用完"作为结束条件**：序列用完只说明没有输入了，
+      // 玩家还在关里跑（实测通关序列的最后一个事件在 30.0 s，而关卡到 32.06 s 才结束，
+      // 早收工会停在 94%）。结束条件只有三个：死了、通关了、帧数兜底。
+      guard++;
+      if (died || st.finished || guard > 240 * 45) { done = true; return false; }
+      return true;
+    }
+    function result() { return { state: st, died: died, frames: guard }; }
+    return { frame: frame, result: result, done: function () { return done; } };
+  }
+
+  // 浏览器端入口：把驱动器包成 Promise。
+  function feed(st, seq) {
+    var drv = replayDriver(st, seq);
+    return new Promise(function (res) {
+      function tick() {
+        if (!drv.frame()) { res(drv.result()); return; }
+        requestAnimationFrame(tick);
+      }
+      tick();
+    });
+  }
+
   function boot(canvas) {
     var r = GD_Render.create(canvas);
-    GD_Render.resize(canvas);
+    r.resize();
     var st = GD_Physics.create(GD_Level.crossbeat);
     var input = GD_Input.create(canvas);
     var acc = 0, last = performance.now(), fps = 60, fpsAcc = 0, fpsN = 0, booted = false;
@@ -2812,7 +2940,7 @@ window.GD_Main = (function () {
     }
     requestAnimationFrame(frame);
 
-    window.addEventListener('resize', function () { GD_Render.resize(canvas); });
+    window.addEventListener('resize', function () { r.resize(); });
 
     return st;
   }
@@ -2824,25 +2952,12 @@ window.GD_Main = (function () {
     st = boot(canvas);
     window.__GD_TEST__ = {                                        // spec §12
       step: function (n) { for (var i = 0; i < n; i++) GD_Physics.step(st, true); return st; },
-      feed: function (seq) {
-        var idx = 0, held = false, guard = 0;
-        return new Promise(function (res) {
-          function tick() {
-            while (idx < seq.length && st.time >= seq[idx].at) { held = seq[idx].down === true; idx++; }
-            GD_Physics.step(st, held);
-            // 死亡期间 st.time 不推进，必须用帧数兜底，否则 Promise 永不 resolve
-            guard++;
-            if (idx >= seq.length || st.finished || guard > 240 * 45) { res(st); return; }
-            requestAnimationFrame(tick);
-          }
-          tick();
-        });
-      },
+      feed: function (seq) { return feed(st, seq); },
       measure: function () { return GD_Physics.measureJump(1); },
       state: function () { return { x: st.x, y: st.y, mode: st.mode, speed: st.speedKey, alive: st.alive, percent: st.percent }; }
     };
   }
-  return { install: install };
+  return { install: install, feed: feed, replayDriver: replayDriver };
 })();
 ```
 
@@ -2864,7 +2979,9 @@ window.GD_Main = (function () {
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+<!-- width/height 必须写死：脚本跑之前画布默认是 300×150，被 CSS 拉成一闪而过的扁条。
+     resize() 之后会按整数缩放比覆盖成真实尺寸，但那一帧的闪动是省不掉的。 -->
+<canvas id="c" width="427" height="240"></canvas>
 <div id="hint">空格 / 点击 = 跳。按住 = 飞船上升</div>
 <script src="level.js"></script>
 <script src="physics.js"></script>
@@ -3205,7 +3322,7 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "
 
 - [ ] **Step 1: 打开 index.html 实玩**
 
-`navigate_page` 到 `http://127.0.0.1:8765/index.html`，用 `press_key` 打一段，`take_screenshot` 记录。
+`navigate_page` 到 `http://127.0.0.1:8766/index.html`，用 `press_key` 打一段，`take_screenshot` 记录。
 
 **这一步必须真玩，不能只看测试通过。** 测试证明的是"数值正确 + 关卡可通"，证明不了"手感是 GD"。
 
@@ -3226,13 +3343,12 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "
 
 改 `physics.js` 的 `CONST` 后必须重跑 `tests/harness.html`——T1 会红。若确实需要偏离 GD 常数，在 spec §13 追加一条记录"偏离原因 + 实玩证据"，不要悄悄改。
 
-- [ ] **Step 4: 清理临时文件**
+- [ ] **Step 4: 清理临时文件（**已改：不删**）**
 
-删除 `tests/visual-smoke.html`（Task 9 的调试页，不属于交付物）。
-
-```bash
-cd "C:/Users/user/Documents/My Games/drgame" && git rm tests/visual-smoke.html
-```
+`tests/visual-smoke.html` **保留在仓库里**。它原计划是删掉的（"Task 9 的调试页，不属于交付物"），
+但接手后改了主意：它是渲染层唯一的调试入口（`?t=` / `?x=` 能直接看任意一段的画面），
+Task 13 的手感校准要反复用；真正的游戏页面 `index.html` 已经有了，两者用途不同。
+所以这一步**不执行任何删除**。
 
 - [ ] **Step 5: 跑完整测试 + 最终截图**
 
@@ -3265,7 +3381,7 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js level.js && g
 |---|---|---|---|
 | 1 | `wx(ctx, x)` 读 `ctx.st.x`，但 `ctx` 是 2D 上下文 | 所有物体坐标 NaN，画面全黑 | 改为 `wx(st, x)`，贯穿 block/spike/portal/objects/player/particles |
 | 2 | `feed()` 把布尔当对象读（`st.testHeld.down`）；死亡期间 `st.time` 不推进 | Promise 永不 resolve | 用局部 `held`，并以帧数 `guard` 兜底 |
-| 3 | `level.js` 段落边界与传送门位置不一致，5 段 vs spec §7 | `tOf()` 分段积分与真实轨迹对不上 | 压成 4 段，边界严格等于传送门 x（118 / 254） |
+| 3 | `level.js` 段落边界与传送门位置不一致，5 段 vs spec §7 | `tOf()` 分段积分与真实轨迹对不上 | 压成 4 段。~~边界严格等于传送门 x（118 / 254）~~ → **这句是错的**，见第 19 条：传送门在"玩家前沿碰到门的 x"时才生效，真实切换点是 111.5 / 115.5 / 252.5 / 253.5，与段落断点差 0.5 格 |
 | 4 | 回放序列用 `x / 10.386` 换算时刻，但关卡有 136 格跑在 2x | 254 之后每个起跳偏约 3 秒，症状易误判成"关卡太难" | 改为 `tOf()` 分段积分；`jumpOver(x, w)` 让落点在障碍末端后 0.3 格 |
 | 5 | 非法 CSS 颜色 `'#7cff5fa8'` | 传送门描边色回退成黑色 | 改 `'#7cff5f'` |
 | 6 | `wasAlive` 是模块级变量 | 多实例/重开测试串状态 | 移入 `create()` 的实例字段 |
@@ -3278,8 +3394,668 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add physics.js level.js && g
 | 13 | T5b 用"距墙一整跳"（`6 - span ≈ 1.93`）起跳 | 人不是跳过墙而是**落在墙上**：下落途中 `LAND_TOL` 先把第 1 格的顶当成可站面把人吸进方块内部，随即被缩小框判死；`trial(2)` 恒红，症状看起来像"跳跃高度不够"会误导去改 `JUMP_V0` | 起跳点改为半跳距 `6 - span/2`，让顶点落在墙前沿；实测可通过区间 x∈[2.5, 5.45]（阈值 1.00→5.95、步长 0.05 扫出，连续无空洞），3.966 在正中。本条原先记的 `[2.5, 4.6]`/`3.97` 是过期读数，已由第 14 条重扫修正 |
 | 14 | Task 4 质量复查：T5a/T5b/T5c 只断"结果"不钉"原因"。T5a 只查 `!alive`（任何误判早死都绿灯）、名字写着"从 0% 重开"却从不看 `percent`、重开等待写死 240 步；T5b 的 `trial()` 只返回 `st.alive`，"跳过 2 格墙"没证明翻过墙、"撞死 3 格墙"没证明死在墙上，注释里的起跳区间还是过期读数；T5c 标题里的"无 coyote time"零覆盖——平地长按那个循环从不离开地面，任何宽限期都照样绿，`bounced >= 2` 低到"只弹两次也算连跳" | 误判早死、重开没回到 0%、判定框改坏、有人加 coyote grace 都不会红；写死 240 步还会在合法微调常数时把正确实现跑红（模拟 `DEATH_DELAY = 0.5` → 120 步就重开，剩下 120 步活跑 x=5.193，`near(st.x, 0, 0.05)` 必红） | T5a 钉住死亡瞬间 x（实测 7.7462：玩家前沿 `st.x+0.5` 首次进入致死框 `x∈[8.225, 8.775]` 的那一步）+ "同关卡去掉尖刺同样步数仍活着"的反证 + 重开后 `percent === 0 && time === 0`，等待步数改成 `round(CONST.DEATH_DELAY / CONST.DT)`（当前 240，等价性不再写进测试体）；T5b `trial()` 改返 `{alive, x, y}`，断 2 格墙 480 步跑到 x=20.77 > 8、3 格墙死在墙柱内（实测 x=6.2316、y=2.1454，落在 x∈(6,7)），注释与第 13 条同步成实测区间；T5c 的 `bounced` 下限收到 6（实测 7）。本条当时给 T5c 补的"真 coyote 探针"其实是拿起跳后按住冒充，测的是"空中不连跳"而不是 coyote 宽限期，它那句"`physics.js` 不需改动、走下台沿不产生空中态"也把缺陷当成了既成事实——由第 15 条推翻并修物理 |
 | 15 | Task 4 质量复查第二轮：走下台沿不掉落是 **`physics.js` 的缺陷**，不是"没法测 coyote"的客观限制。原 `stepCube` 在 `onGround` 且未按时，无条件 `st.y = GROUND_Y(st)`，而 `GROUND_Y` 的支撑窗口是整框重叠（`st.x > o.x + 1.52` 即失效），于是失去支撑那一步把 y 从台面直接拽到地面（实测 x=5.5246 处 1→0、两格台 2→0，`onGround` 全程为真、空中态 0 步） | 原版里走下台阶是掉下去，这里等于"踩空即传送"，Task 5 关卡里任何台沿、Task 12 回放机器人都会被它污染；更要紧的是没有空中态就没有 coyote 的可验对象，第 14 条因此只能用起跳冒充 | `stepCube` 改为支撑面低于脚下时置 `onGround = false`、交给同一步的重力积分做自由落体（`Task 2` Step 3 代码块同步）。实测失去地面那步 `y=0.999, vy=-0.479`（从静止起步，一步重力增量），一格台 31 步、两格台 44 步后落地；T5b 起跳阈值区间在新物理下重扫仍为连续的 `[2.5, 5.45]`、3 格墙 0 个可通过阈值、死点 x=6.2316 未变，注册数与 `pass: 8, fail: 0` 不变。coyote 探针改成真的走台沿：离地后按住 12 步（0.05 s）断 `reJump === 0`，负控在离地后外部把 `vy` 重置回 `JUMP_V0` 得 `reJump: 12`、窗口内 `maxVy: 21.88`（干净跑 `maxVy: -0.958`）。另记一条流程坑：`?v=` 只 bust `harness.html`，**bust 不到 `<script src>` 子资源**——改完 `physics.js` 换新 `?v=` 的页面照旧跑旧物理，必须 `navigate_page {type: "reload", ignoreCache: true}`；「测试执行流程」Step B 已补。复审另提三条 nit：①T5c 原先只钉"离地瞬间"和"12 步后仍在空中"，浮空冻结（`onGround` 假但 `vy` 不再积分）能同时躲过，已补总滞空步数断言，期望值现算 `round(√(2·1/g)/DT)`（=32，实测 1+12+19=32）而不是抄实测；②`portal_cube` 置 `onGround` 不清 `vy` 破坏"在地面 ⇒ `vy==0`"不变式，本条的新分支正依赖它，已并入第 11 条延后清单留给 Task 7；③harness 那 3 条 404 是后续任务的前向引用，不动 |
-| 16 | Task 5 关卡数据落地后做了两件事才敢提交：①带 `ring` 的关卡一进邻域就崩——`collide(st)` 少了 `held` 形参，而跳环是"按下才触发"的，`'use strict'` 里引用未定义形参直接 `ReferenceError`（physics.js 命中环那一步）；②拿穷举起跳阈值的机器人扫全关，发现三处按物理常数根本打不通：`pillar(82,3)`、`pillar(324,3)` 的 3 格柱 tap 可通过阈值 **0/65**，`spikeRun(340,3)` 三连刺要腾空覆盖 3.55 格而实测 `y≥0.55` 的窗口只有 **3.49 格**（tap/hold 都 0）| ①Task 6 一加环整个模拟就炸，而且炸在关卡数据里，症状会误判成"关卡布局有问题"；②关卡号称"人类可通"却有三处死局，Task 12 通关机器人会在第一个 3 格柱就永远过不去，届时容易被误读成"机器人策略不行"而去放宽物理 | ①`collide(st, held)` + 调用点同步（Task 2 Step 3 代码块已镜像）；②两处柱子降为 2 格、三连刺改双连刺，并把各障碍的可通过窗口记进注释：单刺 20/65、双刺 10/65、2 格柱 30/65、环/板/传送门/终点 64–65/65。改完全关 30 个 cube 组 `zeroTapGroups: []`，`pass: 11, fail: 0, registered: 11` 不变。**顺带两条要记住的**：(a) 审计机器人一开始步数上限写死 6000 步，只能跑到 x≈259，于是 x>254 的所有组集体"看起来打不通"——上限必须按关卡长度给（现用 `240*40`）；(b) **新缺陷，留给后续**：3 格柱长按有 10 个阈值能"过"，靠的是 `LAND_TOL` 在下落途中把墙肩（top=2）当成可站面把人吸上去、随即起跳拿到 4.17 的顶点，这不是合法路线，本条按 tap 能否通过来判，`LAND_TOL` 墙肩吸附并入第 11 条延后清单 |
+| 16 | Task 5 关卡数据落地后做了两件事才敢提交：①带 `ring` 的关卡一进邻域就崩——`collide(st)` 少了 `held` 形参，而跳环是"按下才触发"的，`'use strict'` 里引用未定义形参直接 `ReferenceError`（physics.js 命中环那一步）；②拿穷举起跳阈值的机器人扫全关，发现三处按物理常数根本打不通：`pillar(82,3)`、`pillar(324,3)` 的 3 格柱 tap 可通过阈值 **0/65**，`spikeRun(340,3)` 三连刺要腾空覆盖 3.55 格而实测 `y≥0.55` 的窗口只有 **3.49 格**（tap/hold 都 0）| ①Task 6 一加环整个模拟就炸，而且炸在关卡数据里，症状会误判成"关卡布局有问题"；②关卡号称"人类可通"却有三处死局，Task 12 通关机器人会在第一个 3 格柱就永远过不去，届时容易被误读成"机器人策略不行"而去放宽物理 | ①`collide(st, held)` + 调用点同步（Task 2 Step 3 代码块已镜像）；②两处柱子降为 2 格、三连刺改双连刺，并把各障碍的可通过窗口记进注释：单刺 20/65、双刺 10/65、2 格柱 30/65、环/板/传送门/终点 64–65/65。改完全关 30 个 cube 组 `zeroTapGroups: []`（**"30 个"是 Task 5 当时的旧口径**——那时的扫描器还没排除飞船段的 15 根柱阵；现在的口径是 **23 个 cube 组**，即只算 x<110 或 x≥254 的方块段。飞船段那 15 根柱子的可通性由"飞船能不能在带里穿行"决定，不由点按阈值决定），`pass: 11, fail: 0, registered: 11` 不变。**顺带两条要记住的**：(a) 审计机器人一开始步数上限写死 6000 步，只能跑到 x≈259，于是 x>254 的所有组集体"看起来打不通"——上限必须按关卡长度给（现用 `240*40`）；(b) **新缺陷，留给后续**：3 格柱长按有 10 个阈值能"过"，靠的是 `LAND_TOL` 在下落途中把墙肩（top=2）当成可站面把人吸上去、随即起跳拿到 4.17 的顶点，这不是合法路线，本条按 tap 能否通过来判，`LAND_TOL` 墙肩吸附并入第 11 条延后清单 |
 | 17 | **Task 5 代码质量复查（第二阶段）查出关卡不可玩**：`portal_cube`/`speed_1x` 放在 y=1.0，触发框是 `[1, 3.6]`，而玩家贴地时框是 `[0,1]`——`overlap` 用严格不等号，`1 > 1` 不成立，**门永远不触发**。实测贴地跑过 x=253 仍是飞船模式，随后撞死在 x=264 的第一根尖刺；若一直按住飞（出口净空带 y∈[4,9]）则两扇门都错过，以 2x 飞过整个收尾段直接通关 | 一关最花心思的收尾要么撞死要么被白送；Task 12 回放机器人的 `SEGS`（假定 254 起 cube/1x）与实际对不上；Task 13 实玩会撞死在 x=264 | 两扇门改贴地（y=0.5，与 `portal_ship`/`speed_2x` 同一惯例），触发窗口 y∈(-0.5, 3.1)，松手落地的玩家必然命中。**残留缺口**：玩家在出口一直按住（y>3.1）仍会错过——Task 7 把 `portal_cube` 的触发框扩到通高时一并关掉。L3 里补了回归断言（贴地跑过门必须切成 cube 且降回 1x） |
 | 18 | `tests/assert.js` 的 `approx()`/`near()` 不拒绝 NaN：`err > tolPct` 对 NaN 恒为 false，**断言假绿**。实测把某段 `speed` 写成 `'2x'` → L2 算出的时长变成 NaN → L2 绿；`GD_Level.validate()` 又放行了这个关卡 → L1 也绿。一条写错的速度键名能同时骗过两条断言 | 数值类断言在最该报警的时候最安静；`validate()` 还漏检 `speed:99`、`from>to` 反向段、对象越过终点（实测 4 个坏关卡全部返回 `[]`），而硬规矩要求"输入校验只放在 `GD_Level.validate()` 这个边界上" | `approx`/`near` 开头加有限性检查（非 number 或非有限值直接抛错）；`validate()` 补 `VALID_SPEEDS` 白名单、`from>=to`、段落首尾相接且从 0 开始、对象不得越过 `endBlock` 四类检查；`expect_tests` 的门禁提示语按"少注册/多注册"分开说（原来一律说"有用例文件抛异常"，注册数**多于** N 时是误导） |
 | 19 | 文档与关卡实况脱节三处：①"段落边界与传送门 x 坐标严格相等（118 与 254）"是**错的**——传送门在玩家前沿（x+0.5）碰到门时才生效，实际切换点是 ≈111.5/115.5/252.5/253.5，与段落断点差 0.5 格；②计划的 Task 12 `replay.js` 代码块里障碍宽度还是 `c54f39d` 降级**之前**的（`[340, 3]`、`jumpOver(82, 3)`、`jumpOver(324, 3)`），照抄就会带着一份与关卡不符的障碍表；③`level.js` 的注释写"飞行 118–250"（段落到 254）、"回方块 254：门与降速同点"（门在 253、速度门在 254，不同点） | 错误断言会顺着 handoff 一路传下去：`tOf()` 按段表积分会整体偏 0.05 秒，后面每个起跳时刻都跟着偏，而这种偏很容易被误读成"关卡太难" | 计划与 handoff 里的措辞改成"段落边界与主题切换点对齐"，并附实际生效点对照表；`replay.js` 的 `tOf()` 改成**从关卡里的速度门推导档位**（不再抄第二份段表），障碍宽度同步成 2；`level.js` 的注释改成真实值。**顺带**：Task 13 原计划的 `git add -A` 与硬规矩"永远不要 `git add -A`"直接冲突，已改成点名 add |
 | 20 | Task 8 动手时发现三处计划与实测对不上：①计划原版的 **T6b** 跑满 `240*60` 步之后取 `st.x` 并断 `near(st.x, 0, 12)`，实测那个取样点落在**死亡延时**里（`alive=false`、`deadTimer=0.45`、`x=13.76145`=第一根尖刺的死亡点），断言必然红——而计划把它解释成"`respawn()` 漏了某个字段"，方向就错了；②handoff 缺陷清单第 5 条说方块落地判定的 `vy <= 0` "去掉它 13 条断言全绿"，实测去掉之后玩家**照样死**（死在柱顶那一格），只是死之前被吸到了方块顶上——所以"必须死"这条断言抓不住这个变异，必须同时钉住"没被吸到顶上"；③`collide` 的玩家框每轮重算之后**没有任何一条断言能把它跑红** | ①照抄计划会把一个**取样时机**问题误当成 `respawn()` 的实现缺陷去"修"，改坏真正的重开逻辑；②只断"死了"的话，去掉 `vy<=0` 这个变异照样全绿，第 5 条缺陷等于没修；③修复失去保护，将来有人把玩家框改回"进循环前算一次"，没有任何测试会红 | ①T6b 改成"每次重开当刻取样"，并逐字段体检（x/y/vy/rot/percent/time/deadTimer/alive/finished/onGround/mode/speedKey/used），断言反而更严（x 精确为 0）；②补 T5d：玩家上升中撞进 2 格柱必须死，**且** y 保持撞上去那一刻的值、vy 仍为正（落地分支一旦触发会把 vy 清零）——实测去掉 `vy<=0` 后 y 从 0.9407 变成 1.0、vy 从 9.52 变成 0，T5d 变红；③如实记为残留缺口：当前关卡与任何合理关卡都观察不到过期玩家框（落地吸附只抬 0.33 格，而尖刺框高 0.55，要看出差别必须造一个"尖刺嵌在方块格里"的关卡），保护网只有可通性扫描、通关序列与 55700 帧逐帧对拍 |
+
+
+## Task 13.5: 渲染层自动化覆盖（补做）
+
+**Files:**
+- Create: `tests/render.test.js`
+- Modify: `tests/harness.html`（真正加载 render/hud/input/audio/main 五个文件；门禁 21 → 29）
+- Modify: `render.js` / `hud.js` / `input.js` / `audio.js` / `main.js` / `physics.js` /
+  `tests/assert.js` / `tests/physics.test.js`
+- Modify: `docs/superpowers/plans/2026-11-01-geometry-dash-clone.md`（本节）
+
+### 为什么补这一节
+
+Task 13 的两阶段复查里，代码质量复查发现一件要命的事：**渲染、HUD、输入、音频、装配这五层
+从来没有被自动化测过**。harness 只加载 assert / level / physics 和测试文件；那五层只是被 `fetch`
+当**源码文本**预取，用来凑 `SOURCES` 的键数门禁（6 个键），D1 的静态检查也只查 physics.js。
+
+实测把下面四条改动分别塞进代码里，**21 条测试照样全绿**：
+
+| 变异 | 后果 | 21 条测试的反应 |
+|---|---|---|
+| HUD 忽略 camY | "Attempt" 牌子飘在半空 | 全绿 |
+| 相机死区上界改成 100 | 相机永不跟随，玩家飞出画面 | 全绿 |
+| `render.js` 漏改一个 `wy` 调用点 | 地面线不跟着相机走 | 全绿 |
+| 音频调度器改成相对累加 | 节拍逐渐漂移 | 全绿 |
+
+也就是说：**任何改动坏了这五层，只有拿浏览器的人能发现**——而这恰恰是最容易改坏又最难自查的一层。
+
+### 怎么测：用"记录型 2D 上下文桩"驱动真实代码
+
+不 mock 掉渲染层，而是给它一个**记录型 canvas 上下文**：把 `fillRect / strokeRect / arc /
+ellipse / fillText / beginPath / moveTo / lineTo / translate / rotate / save / restore /
+clearRect / setTransform / createLinearGradient / roundRect` 全部记成数组。这样测的是
+**磁盘上那份真实的 render.js / hud.js**，不是照着抄一遍的仿制品（仿制品会跟实现一起漂移，测了等于没测）。
+
+八条用例：
+
+| 用例 | 断什么 |
+|---|---|
+| R1 | `draw()` 前后 `JSON.stringify(st)` 逐字节相同——渲染层只画不改状态 |
+| R2 | **相机敏感度**：同一状态用 camY=0 与 camY=1 各画一遍，跟着世界走的坐标差必须正好 +30px（1 格）；差 0 的只能是整屏底色与玩家图标的局部坐标；背景视差是 +9px（0.3 格）。**漏改一个 `wy` 调用点就会红** |
+| R3 | 相机死区：玩家 y=8 时相机必须上滚 |
+| R4 | 整关回放 7695 帧，玩家全程在画布内 |
+| R5 | HUD 的 "Attempt" 牌子跟着相机走，且 hud.js 与 render.js 的 GROUND_Y 是同一个值 |
+| I1 | 输入按来源分离：鼠标 + 空格可以同时按住，松开一个不影响另一个 |
+| A1 | 音频调度器不把音符排到过去（模拟后台节流），且丢音不丢相位 |
+| M1 | 装配：回放一帧多推几步，玩家死了立刻收工 |
+
+### 顺带修掉的三个真 bug
+
+复查同时找出三个**自动化测不出来、但实测能复现**的缺陷（主控已独立复现前两个）：
+
+1. **【高】音频：切后台回来会把几百个过期音符一次性排进当前时刻。**
+   实测后台 30 s 后第一次回调排了 606 个音、其中 601 个时间点在过去；WebAudio 的 `start(t)`
+   在 `t <= currentTime` 时等于"立刻响" → 切回标签页一声轰响 + 数百个节点同时启动。
+   改法：**过期音只走相位、不建节点**——节拍网格锚在 `ctx.currentTime` 上，丢音不等于丢拍子。
+2. **【中】输入：键盘与鼠标的"按住"互相覆盖。**
+   实测：鼠标按着 + 空格按着 → 松开空格 → `held` 变 false，飞船会往下掉。
+   改法：改成来源集合（key / pointer / touch），任一来源仍在按住就保持按住；
+   `blur` 与 `touchcancel` 时全清。
+3. **【中】`input.js` 的 `held` 是模块级变量**（多实例共享状态），挪进实例。
+
+另外按 spec §8 补了两处视觉：尖刺"内部近黑渐变"、进度条"圆角"。
+`measure()` 的返回键名从 `{airtime, apex, span}` 改成 spec §12 写的 `{airtime, apexBlocks, spanBlocks}`。
+
+### 变异验证（验收标准）
+
+新增用例必须能抓住上面那四条原本全绿的变异。实测（内存变异，磁盘不动）：
+
+| 变异 | 结果 | 被哪条抓住 |
+|---|---|---|
+| HUD 忽略 camY | 红 | R5 |
+| 相机死区上界改成 100 | 红 | R3 + R4 |
+| 漏改一个 `wy` 调用点 | 红 | R2 |
+| 音频调度改成相对累加 | 红 | A1 |
+| 音频"跳过过期"与守卫一起去掉（= 原始 bug） | 红 | A1 |
+| 输入：松开一个来源就全松 | 红 | I1 |
+| 渲染层改了状态 | 红 | R1 |
+| 关卡里多铺一块天花板在 x=260 | 红 | L3（反向断言） |
+
+### Step 1: 写 tests/render.test.js
+
+```js
+// 渲染层 / HUD / 输入 / 音频 / 装配的自动化覆盖。
+//
+// 为什么要有这个文件：harness 以前只加载 assert/level/physics/测试文件，
+// render/hud/input/audio/main 只是被 fetch 当**源码文本**预取（用来满足 SOURCES 的键数 ≥ 6 门禁），
+// 于是这四层**零执行覆盖**。实测下面四条变异全都 21/21 全绿：
+//   ① HUD 忽略 camY（"Attempt"牌子飘在半空）
+//   ② 相机死区上界改成 100（相机永不跟随）
+//   ③ render.js 漏改一个 wy 调用点（地面线不过相机）
+//   ④ 音频调度器改成相对累加（产生漂移）
+// 这里用一个"记录型 2D 上下文桩"驱动**真实的** render.js / hud.js / input.js / audio.js / main.js，
+// 把上面四条变异变成红。
+//
+// 纯 JS、零依赖：浏览器 harness 与 Node 快速回路（run-tests.mjs）都能跑。
+// 断言框架是**同步**的（GD_ASSERT.run() 直接调 fn()），所以这里不用 Promise。
+
+// ---------------------------------------------------------------- 记录型 2D 上下文桩
+
+// 把每一次绘制调用记成一条 {op, args, local}。
+// local = true 表示这条记录发生在 translate 之后（玩家图标的局部坐标），
+// 那部分坐标本来就不该随相机变，两次绘制必须逐字节相同。
+function recCtx() {
+  var ops = [];
+  var txDepth = 0, stack = [];
+  var ctx = {
+    fillStyle: '#000', strokeStyle: '#000', lineWidth: 1, font: '',
+    textAlign: 'left', globalAlpha: 1, imageSmoothingEnabled: true,
+    ops: ops,
+    reset: function () { ops.length = 0; txDepth = 0; stack.length = 0; }
+  };
+  function rec(op, args) { ops.push({ op: op, args: args, local: txDepth > 0 }); }
+  ctx.fillRect = function (x, y, w, h) { rec('fillRect', [x, y, w, h]); };
+  ctx.strokeRect = function (x, y, w, h) { rec('strokeRect', [x, y, w, h]); };
+  ctx.clearRect = function (x, y, w, h) { rec('clearRect', [x, y, w, h]); };
+  ctx.roundRect = function (x, y, w, h, r) { rec('roundRect', [x, y, w, h, r]); };
+  ctx.fillText = function (t, x, y) { rec('fillText', [t, x, y]); };
+  ctx.arc = function (x, y, r, a1, a2) { rec('arc', [x, y, r, a1, a2]); };
+  ctx.ellipse = function (x, y, rx, ry, rot, a1, a2) { rec('ellipse', [x, y, rx, ry, rot, a1, a2]); };
+  ctx.beginPath = function () { rec('beginPath', []); };
+  ctx.closePath = function () { rec('closePath', []); };
+  ctx.fill = function () { rec('fill', []); };
+  ctx.stroke = function () { rec('stroke', []); };
+  ctx.moveTo = function (x, y) { rec('moveTo', [x, y]); };
+  ctx.lineTo = function (x, y) { rec('lineTo', [x, y]); };
+  ctx.translate = function (x, y) { rec('translate', [x, y]); txDepth++; };
+  ctx.rotate = function (a) { rec('rotate', [a]); };
+  ctx.save = function () { stack.push(txDepth); rec('save', []); };
+  ctx.restore = function () { rec('restore', []); txDepth = stack.length ? stack.pop() : 0; };
+  ctx.setTransform = function (a, b, c, d, e, f) { rec('setTransform', [a, b, c, d, e, f]); };
+  ctx.createLinearGradient = function (x0, y0, x1, y1) {
+    rec('createLinearGradient', [x0, y0, x1, y1]);
+    return { addColorStop: function () {} };
+  };
+  ctx.measureText = function () { return { width: 0 }; };
+  return ctx;
+}
+
+// 一条绘制记录的"纵向参量"：能代表它落在画面哪一行的那些数。
+// 矩形取上沿与下沿（两个沿都要比：地面色带的上沿跟着相机走、下沿钉在画布底）。
+function verticals(op) {
+  var a = op.args, out = [];
+  switch (op.op) {
+    case 'fillRect': case 'strokeRect': case 'clearRect': case 'roundRect':
+      out.push(a[1], a[1] + a[3]); break;
+    case 'fillText': out.push(a[2]); break;
+    case 'arc': out.push(a[1] - a[2], a[1] + a[2]); break;
+    case 'ellipse': out.push(a[1] - a[3], a[1] + a[3]); break;
+    case 'moveTo': case 'lineTo': case 'translate': out.push(a[1]); break;
+    case 'createLinearGradient': out.push(a[1], a[3]); break;
+  }
+  return out;
+}
+
+function fakeCanvas(ctx) {
+  return {
+    width: 427, height: 240, style: {},
+    getContext: function () { return ctx; }
+  };
+}
+
+// 事件源桩：input.js 的注入口要靠它驱动。
+function stubTarget() {
+  var handlers = {};
+  return {
+    addEventListener: function (type, fn) {
+      (handlers[type] || (handlers[type] = [])).push(fn);
+    },
+    removeEventListener: function (type, fn) {
+      var a = handlers[type]; if (!a) return;
+      var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
+    },
+    dispatch: function (type, ev) {
+      var a = handlers[type] || [];
+      var e = ev || { type: type, preventDefault: function () {} };
+      for (var i = 0; i < a.length; i++) a[i].call(this, e);
+    }
+  };
+}
+
+function findOp(ops, pred) {
+  for (var i = 0; i < ops.length; i++) if (pred(ops[i])) return i;
+  return -1;
+}
+
+// ---------------------------------------------------------------- R1 只画不改状态
+
+GD_ASSERT.test('R1 渲染与 HUD 只画不改状态', function () {
+  var ctx = recCtx();
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  st.x = 130; st.y = 3; st.mode = 'ship'; st.speedKey = 2;
+  var r = GD_Render.create(fakeCanvas(ctx));
+
+  var before = JSON.stringify(st);
+  GD_Render.draw(r, st, 1 / 60);
+  GD_ASSERT.ok(JSON.stringify(st) === before, 'render.draw 不得改物理状态');
+
+  before = JSON.stringify(st);
+  GD_Hud.draw(ctx, st, 60, r.camY);
+  GD_ASSERT.ok(JSON.stringify(st) === before, 'hud.draw 不得改物理状态');
+});
+
+// ---------------------------------------------------------------- R2 相机敏感度
+
+// 屏幕固定的东西：整屏清屏与整屏底色。其余的都必须跟着相机走。
+function isScreenFixed(op) {
+  if (op.op === 'clearRect') return true;
+  if (op.op === 'fillRect' && op.args[0] === 0 && op.args[1] === 0 &&
+      op.args[2] === GD_Render.LW && op.args[3] === GD_Render.LH) return true;
+  return false;
+}
+
+GD_ASSERT.test('R2 纵向相机：跟着世界的画面必须正好差 1 格', function () {
+  var ctx = recCtx();
+  var canvas = fakeCanvas(ctx);
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  // y=3 让玩家相对相机落在死区 [1.0, 4.6] 里，两次绘制都不会被 updateCamera 改动，
+  // 于是 camY 完全由测试控制（否则死区会把 camY 拉走，测的就不是"差 1 格"了）。
+  st.x = 130; st.y = 3; st.mode = 'ship'; st.speedKey = 2;
+
+  var r0 = GD_Render.create(canvas);
+  ctx.reset();
+  GD_Render.draw(r0, st, 1 / 60);
+  var t0 = ctx.ops.slice();
+
+  var r1 = GD_Render.create(canvas);
+  r1.camY = 1;
+  ctx.reset();
+  GD_Render.draw(r1, st, 1 / 60);
+  var t1 = ctx.ops.slice();
+
+  GD_ASSERT.ok(t0.length > 20, '这一帧应该画了不少东西，实测 ' + t0.length + ' 条记录');
+  if (t0.length !== t1.length) {
+    throw new Error('两次绘制的记录条数不同：' + t0.length + ' vs ' + t1.length);
+  }
+
+  var problems = [], parallax = [], world = [];
+  for (var i = 0; i < t0.length; i++) {
+    var oa = t0[i], ob = t1[i];
+    if (oa.op !== ob.op) { problems.push('#' + i + ' 操作类型不同：' + oa.op + ' vs ' + ob.op); continue; }
+    if (oa.local || ob.local) {
+      // translate 之后的局部坐标（玩家图标的笔画）：两次必须完全一样
+      for (var k = 0; k < oa.args.length; k++) {
+        if (oa.args[k] !== ob.args[k]) {
+          problems.push('#' + i + ' ' + oa.op + ' 的局部坐标变了：' + oa.args[k] + ' → ' + ob.args[k]);
+          break;
+        }
+      }
+      continue;
+    }
+    var va = verticals(oa), vb = verticals(ob);
+    if (va.length === 0) continue;                       // 没有纵向参量的操作（beginPath 之类）不比
+    if (va.length !== vb.length) { problems.push('#' + i + ' ' + oa.op + ' 的纵向参量数不同'); continue; }
+    // 位移分类：世界物体正好 1 格（30px），背景视差 0.3 格（9px）。
+    // 别的数值 = 有 wy 调用点漏改 r，或者多乘/少乘了相机系数。
+    var isWorld = false, isParallax = false, odd = [];
+    for (var j = 0; j < va.length; j++) {
+      var d = vb[j] - va[j];
+      if (Math.abs(d) <= 1e-9) continue;
+      if (Math.abs(d - GD_Render.BLK) < 1e-6) isWorld = true;
+      else if (Math.abs(d - GD_Render.BLK * 0.3) < 1e-6) isParallax = true;
+      else odd.push(d);
+    }
+    if (odd.length) {
+      problems.push('#' + i + ' ' + oa.op + ' 的纵向位移是 [' + odd.join(',') + ']，只能是 0 / 9 / 30');
+      continue;
+    }
+    if (isWorld && isParallax) {
+      problems.push('#' + i + ' ' + oa.op + ' 同时有 1 格和 0.3 格两种位移');
+      continue;
+    }
+    if (isParallax) { parallax.push(i); continue; }
+    if (isWorld) { world.push(i); continue; }
+    // 完全没动：只能是屏幕固定的东西。
+    // 别的（方块、尖刺、门、地面线、粒子、玩家）少了一个 wy(r, …) 就会落到这里。
+    if (!isScreenFixed(oa)) {
+      problems.push('#' + i + ' ' + oa.op + ' 完全没动，但它本该跟着相机走：args=' + JSON.stringify(oa.args));
+    }
+  }
+
+  GD_ASSERT.ok(parallax.length > 0, '这一帧必须有背景视差（0.3 格）的绘制，实测 ' + parallax.length + ' 条');
+  GD_ASSERT.ok(world.length > 0, '这一帧必须有跟着世界走（1 格）的绘制，实测 ' + world.length + ' 条');
+  // 背景先画、物体后画：视差位移不许出现在世界位移之后。
+  if (parallax.length && world.length) {
+    GD_ASSERT.ok(parallax[parallax.length - 1] < world[0],
+      '背景视差（0.3 格）出现在世界物体（1 格）之后：#' + world[0] + ' / #' + parallax[parallax.length - 1]);
+  }
+  GD_ASSERT.ok(problems.length === 0, '相机敏感度不对：\n  ' + problems.slice(0, 8).join('\n  '));
+});
+
+// ---------------------------------------------------------------- R3 相机死区跟随
+
+GD_ASSERT.test('R3 纵向相机死区跟随（玩家太高时相机必须上滚）', function () {
+  var ctx = recCtx();
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  st.x = 130; st.y = 8; st.mode = 'ship'; st.speedKey = 2;
+  var r = GD_Render.create(fakeCanvas(ctx));
+  GD_Render.draw(r, st, 1 / 60);
+
+  // 死区上界由 render.js 的常数现算（VIS_TOP - 1.2），不写死 4.6。
+  var CAM_HI = GD_Render.GROUND_Y / GD_Render.BLK - 1.2;
+  GD_ASSERT.ok(r.camY > 0,
+    '玩家在 y=8 时相机必须上滚（死区上界 ' + CAM_HI.toFixed(2) + '），实测 camY=' + r.camY);
+  GD_ASSERT.near(st.y - r.camY, CAM_HI, 1e-6, '相机应把玩家压在死区上界');
+});
+
+// ---------------------------------------------------------------- R4 玩家全程在画面内
+
+GD_ASSERT.test('R4 整关回放时玩家全程在画面里', function () {
+  var ctx = recCtx();
+  var r = GD_Render.create(fakeCanvas(ctx));
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  var seq = GD_Replay.crossbeat, si = 0, held = false;
+  var out = [], frames = 0;
+
+  for (var n = 0; n < 240 * 40 && !st.finished; n++) {
+    while (si < seq.length && seq[si].t <= st.time) { held = seq[si].d; si++; }
+    GD_Physics.step(st, held);
+    ctx.reset();
+    GD_Render.draw(r, st, 1 / 60);
+    frames++;
+    if (!st.alive) continue;                     // 死了不画玩家
+    var ti = findOp(ctx.ops, function (o) { return o.op === 'translate'; });
+    if (ti < 0) { out.push('第 ' + frames + ' 帧没有画玩家'); break; }
+    var px = ctx.ops[ti].args[0], py = ctx.ops[ti].args[1], half = GD_Render.BLK / 2;
+    if (px - half < 0 || px + half > GD_Render.LW || py - half < 0 || py + half > GD_Render.LH) {
+      out.push('第 ' + frames + ' 帧玩家出画：屏幕 (' + px.toFixed(2) + ',' + py.toFixed(2) +
+               ') 世界 y=' + st.y.toFixed(2) + ' camY=' + r.camY.toFixed(2));
+      break;
+    }
+  }
+  GD_ASSERT.ok(out.length === 0, out.join(' | '));
+  GD_ASSERT.ok(st.finished, '回放应通关（实测 percent=' + st.percent.toFixed(1) + '）');
+  GD_ASSERT.ok(frames > 7000, '应跑完整关（实测 ' + frames + ' 帧）');
+});
+
+// ---------------------------------------------------------------- R5 HUD 过相机 + GROUND_Y 一致
+
+GD_ASSERT.test('R5 HUD：Attempt 牌子跟着相机走，地面线与 render.js 是同一个', function () {
+  var ctx = recCtx();
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  st.x = 2; st.y = 0; st.attempt = 3; st.percent = 42;
+
+  ctx.reset(); GD_Hud.draw(ctx, st, 60, 0);
+  var h0 = ctx.ops.slice();
+  ctx.reset(); GD_Hud.draw(ctx, st, 60, 1);
+  var h1 = ctx.ops.slice();
+
+  var isAttempt = function (o) { return o.op === 'fillText' && String(o.args[0]).indexOf('Attempt') === 0; };
+  var i0 = findOp(h0, isAttempt), i1 = findOp(h1, isAttempt);
+  GD_ASSERT.ok(i0 >= 0 && i1 >= 0, 'HUD 必须画 Attempt 牌子');
+
+  // 牌子是世界锚定的：相机上滚 1 格，它就正好下移 1 格（30px）。
+  GD_ASSERT.near(h1[i1].args[2] - h0[i0].args[2], GD_Render.BLK, 1e-9,
+    'Attempt 牌子必须跟着相机走（相机上滚 1 格 → 牌子下移 1 格）');
+  // hud.js 自己算了一份 GROUND_Y（不能直接读 GD_Render.GROUND_Y：hud.js 要能脱离 render.js 加载），
+  // 这里用 Attempt 牌子的屏幕高度把两份 GROUND_Y 钉在一起。
+  GD_ASSERT.near(h0[i0].args[2], GD_Render.GROUND_Y - 3 * GD_Render.BLK, 1e-9,
+    'HUD 的 GROUND_Y 必须与 render.js 的 GROUND_Y 相同（hud.js 是自己算的那一份）');
+
+  // 其余的（FPS / 进度条 / 百分比）都是屏幕固定的，一次都不许动。
+  var moved = [];
+  for (var i = 0; i < h0.length; i++) {
+    if (i === i0) continue;
+    var va = verticals(h0[i]), vb = verticals(h1[i]);
+    for (var j = 0; j < va.length; j++) {
+      if (Math.abs(vb[j] - va[j]) > 1e-9) moved.push('#' + i + ' ' + h0[i].op + ' 动了 ' + (vb[j] - va[j]).toFixed(3));
+    }
+  }
+  GD_ASSERT.ok(moved.length === 0, '只有 Attempt 牌子该跟着相机走，其余是屏幕固定的：' + moved.join(' | '));
+});
+
+// ---------------------------------------------------------------- I1 输入按来源分离
+
+GD_ASSERT.test('I1 输入按来源分离：鼠标 + 空格可以同时按住', function () {
+  var tgt = stubTarget(), win = stubTarget(), doc = stubTarget();
+  var input = GD_Input.create(tgt, { win: win, doc: doc });
+  var space = { code: 'Space', key: ' ', preventDefault: function () {} };
+  var noop = { preventDefault: function () {} };
+
+  // 鼠标按住 → 再按空格 → 松开空格：鼠标还按着，必须仍然按住
+  tgt.dispatch('pointerdown', noop);
+  GD_ASSERT.ok(input.get(), '按下鼠标应按住');
+  win.dispatch('keydown', space);
+  GD_ASSERT.ok(input.get(), '鼠标 + 空格同时按住');
+  win.dispatch('keyup', space);
+  GD_ASSERT.ok(input.get(), '松开空格后鼠标还按着，必须仍然按住');
+  win.dispatch('pointerup');
+  GD_ASSERT.ok(!input.get(), '两个来源都松开后必须松开');
+
+  // 反过来：空格按住 → 按鼠标 → 松开鼠标：空格还按着，必须仍然按住
+  win.dispatch('keydown', space);
+  GD_ASSERT.ok(input.get(), '按下空格应按住');
+  tgt.dispatch('pointerdown', noop);
+  GD_ASSERT.ok(input.get(), '空格 + 鼠标同时按住');
+  win.dispatch('pointerup');
+  GD_ASSERT.ok(input.get(), '松开鼠标后空格还按着，必须仍然按住');
+  win.dispatch('keyup', space);
+  GD_ASSERT.ok(!input.get(), '两个来源都松开后必须松开');
+
+  // 触摸是第三个独立来源
+  doc.dispatch('touchstart', noop);
+  GD_ASSERT.ok(input.get(), '按下触摸应按住');
+  win.dispatch('keydown', space);
+  win.dispatch('keyup', space);
+  GD_ASSERT.ok(input.get(), '松开空格后触摸还按着，必须仍然按住');
+  doc.dispatch('touchend');
+  GD_ASSERT.ok(!input.get(), '触摸松开后必须松开');
+
+  // blur：三个来源全清（切走窗口时浏览器未必派发 pointerup/keyup）
+  tgt.dispatch('pointerdown', noop);
+  win.dispatch('keydown', space);
+  doc.dispatch('touchstart', noop);
+  win.dispatch('blur');
+  GD_ASSERT.ok(!input.get(), 'blur 之后必须全部松开');
+
+  // 多实例互不影响：状态必须是实例字段，不能是模块级变量
+  var t2 = stubTarget(), w2 = stubTarget(), d2 = stubTarget();
+  var other = GD_Input.create(t2, { win: w2, doc: d2 });
+  tgt.dispatch('pointerdown', noop);
+  GD_ASSERT.ok(input.get(), '第一个实例应按住');
+  GD_ASSERT.ok(!other.get(), '第二个实例不该被第一个实例影响');
+  tgt.dispatch('pointerup');
+});
+
+// ---------------------------------------------------------------- A1 音频不把音符排到过去
+
+function fakeAudioCtx(clock, starts) {
+  function param(v) {
+    return {
+      value: v,
+      setValueAtTime: function () {}, linearRampToValueAtTime: function () {},
+      exponentialRampToValueAtTime: function () {}
+    };
+  }
+  var c = {
+    currentTime: 0, sampleRate: 1000, state: 'running', destination: {},
+    close: function () {}, resume: function () {}
+  };
+  c.createGain = function () { return { gain: param(0), connect: function () { return this; } }; };
+  c.createOscillator = function () {
+    return {
+      type: 'sine', frequency: param(440), connect: function () { return this; },
+      start: function (t) { starts.push(t); }, stop: function () {}
+    };
+  };
+  c.createBiquadFilter = function () {
+    return { type: 'lowpass', frequency: param(350), connect: function () { return this; } };
+  };
+  c.createBuffer = function (ch, len) {
+    return { getChannelData: function () { return new Float32Array(len); } };
+  };
+  c.createBufferSource = function () {
+    return { buffer: null, connect: function () { return this; }, start: function (t) { starts.push(t); } };
+  };
+  return c;
+}
+
+GD_ASSERT.test('A1 音频调度器不把音符排到过去（后台节流），且丢音不丢相位', function () {
+  var savedAC = window.AudioContext, savedSI = window.setInterval, savedCI = window.clearInterval;
+  var starts = [], cb = null, ctx = null;
+  try {
+    window.AudioContext = function () { ctx = fakeAudioCtx(0, starts); return ctx; };
+    // 接管定时器：后台节流就是"回调隔很久才跑一次"，用手动触发来模拟。
+    window.setInterval = function (fn) { cb = fn; return 1; };
+    window.clearInterval = function () { cb = null; };
+
+    var step = GD_Audio.SPB / 4;                 // 一个 16 分音符的时长
+    var origin = null, byResidue = {}, residueBad = [];
+
+    // 把一批 start() 归到格点上，并检查同一余数（k%64）的格点排的音数始终一致。
+    function take() {
+      var local = {};
+      for (var i = 0; i < starts.length; i++) {
+        var k = Math.round((starts[i] - origin) / step);
+        local[k] = (local[k] || 0) + 1;
+      }
+      starts.length = 0;
+      for (var kk in local) {
+        var k = Number(kk), r = ((k % 64) + 64) % 64;
+        if (byResidue[r] === undefined) byResidue[r] = local[k];
+        else if (byResidue[r] !== local[k]) {
+          residueBad.push('格点 ' + k + '（余 ' + r + '）排了 ' + local[k] + ' 个音，同余数的其它格点是 ' + byResidue[r] + ' 个');
+        }
+      }
+    }
+
+    GD_Audio.start();
+    GD_ASSERT.ok(cb !== null, 'start() 之后应当有调度定时器');
+
+    // 正常跑 6.5 秒（每 25 ms 一次回调，和真实定时器一样），攒出整段 64 格的乐曲型态。
+    ctx.currentTime += 0.025;
+    cb();
+    origin = Math.min.apply(null, starts);
+    take();
+    for (var f = 1; f < 260; f++) { ctx.currentTime += 0.025; cb(); take(); }
+    GD_ASSERT.ok(residueBad.length === 0, '乐曲型态必须每 64 格重复一次：' + residueBad.join(' | '));
+
+    // 模拟后台标签页：setInterval 被压到约 1 Hz，回调再跑时 nextNote 已落后几十秒。
+    // 时刻刻意取 30.37 s（不是整拍），这样"重新锚定相位"的实现也会被下面的格点检查抓住。
+    ctx.currentTime = 30.37;
+    starts.length = 0;
+    cb();
+    var past = 0, offGrid = [], here = {};
+    for (var i = 0; i < starts.length; i++) {
+      var t = starts[i];
+      if (t < ctx.currentTime) past++;
+      var kk2 = (t - origin) / step;
+      if (Math.abs(kk2 - Math.round(kk2)) > 1e-6) offGrid.push(t.toFixed(4));
+      var k2 = Math.round(kk2);
+      here[k2] = (here[k2] || 0) + 1;
+    }
+    GD_ASSERT.ok(past === 0, '后台 30 s 后第一次回调不该排出过期音符，实测 ' + past +
+      ' 个（共排 ' + starts.length + ' 个）');
+    GD_ASSERT.ok(offGrid.length === 0, '音符时刻必须仍在 1/4 拍网格上，实测偏离: ' + offGrid.join(','));
+    var phaseBad = [];
+    for (var hk in here) {
+      var h = Number(hk), r2 = ((h % 64) + 64) % 64;
+      if (byResidue[r2] === undefined) phaseBad.push('格点 ' + h + ' 没有参考');
+      else if (byResidue[r2] !== here[h]) {
+        phaseBad.push('格点 ' + h + ' 排了 ' + here[h] + ' 个音，同余数的参考是 ' + byResidue[r2] + ' 个');
+      }
+    }
+    GD_ASSERT.ok(phaseBad.length === 0, '丢音不能丢相位：' + phaseBad.join(' | '));
+
+    // 短一点的节流（约 1 秒）：换一个实例重来，模拟"另一局刚开"。
+    GD_Audio.stop();
+    GD_Audio.start();
+    ctx.currentTime += 0.025;
+    cb();
+    var origin2 = Math.min.apply(null, starts);
+    starts.length = 0;
+    ctx.currentTime = 1.0;
+    cb();
+    var past2 = 0, offGrid2 = [];
+    for (var j = 0; j < starts.length; j++) {
+      var t2 = starts[j];
+      if (t2 < ctx.currentTime) past2++;
+      var k3 = (t2 - origin2) / step;
+      if (Math.abs(k3 - Math.round(k3)) > 1e-6) offGrid2.push(t2.toFixed(4));
+    }
+    GD_ASSERT.ok(past2 === 0, '后台 1 s 后第一次回调不该排出过期音符，实测 ' + past2 +
+      ' 个（共排 ' + starts.length + ' 个）');
+    GD_ASSERT.ok(offGrid2.length === 0, '音符时刻必须仍在 1/4 拍网格上，实测偏离: ' + offGrid2.join(','));
+  } finally {
+    try { GD_Audio.stop(); } catch (e) { /* 停不掉也要把 window 上的假对象还回去 */ }
+    window.AudioContext = savedAC;
+    window.setInterval = savedSI;
+    window.clearInterval = savedCI;
+  }
+});
+
+// ---------------------------------------------------------------- M1 装配：回放驱动器
+
+GD_ASSERT.test('M1 装配：回放一帧多推几步，玩家死了立刻收工', function () {
+  var seq = [];
+  for (var i = 0; i < GD_Replay.crossbeat.length; i++) {
+    seq.push({ at: GD_Replay.crossbeat[i].t, down: GD_Replay.crossbeat[i].d });
+  }
+  var st = GD_Physics.create(GD_Level.crossbeat);
+  var drv = GD_Main.replayDriver(st, seq);
+  var frames = 0;
+  while (drv.frame()) frames++;
+  var res = drv.result();
+  GD_ASSERT.ok(res.state.finished, '回放应通关，实测 percent=' + res.state.percent.toFixed(1));
+  GD_ASSERT.ok(res.died === null, '回放不该死人');
+  // 一帧 8 步：7695 个物理步只要 ~962 帧，比一步一帧的 7695 帧少一个数量级。
+  GD_ASSERT.ok(frames > 700 && frames < 1200, '一帧多推几步后帧数应远少于物理步数，实测 ' + frames + ' 帧');
+
+  // 死了要立刻收工（原来是等满 240*45 帧 ≈ 3 分钟）。
+  var st2 = GD_Physics.create(GD_Level.crossbeat);
+  var drv2 = GD_Main.replayDriver(st2, [{ at: 0, down: false }, { at: 1000, down: false }]);
+  var frames2 = 0;
+  while (drv2.frame()) frames2++;
+  var res2 = drv2.result();
+  GD_ASSERT.ok(res2.died !== null, '不按任何键必然撞刺，驱动器必须报出死亡');
+  GD_ASSERT.ok(res2.died.x > 0 && res2.died.x < 30, '死亡点应在第一根尖刺附近，实测 x=' + res2.died.x.toFixed(2));
+  GD_ASSERT.ok(frames2 < 240, '死亡后应立刻收工，不该等满帧数上限，实测 ' + frames2 + ' 帧');
+});
+```
+
+### Step 2: harness 真正加载那五层
+
+```html
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"><title>GD tests</title>
+<script>
+  // 必须挂在 <head>：下面这些 <script src> 是 parser-blocking 的，
+  // 尚未创建的那几个的 404 error 事件在解析到文档末尾的内联脚本之前就已发完，
+  // 监听器挂晚了就永远抓不到（实测 loadErrors 恒为 []）。
+  window.addEventListener('error', function (e) {
+    // 两类 error 事件长得一样但意思完全相反，必须分桶：
+    //   资源 404 → e.target.src 有值，e.message 是 undefined
+    //   运行时未捕获异常 → e.message 有值，e.target 不是元素
+    // 混在一个数组里就没法断言"只发生了预期的那些 404"。
+    if (e.target && e.target.src) {
+      (window.__LOAD_ERRORS__ || (window.__LOAD_ERRORS__ = [])).push(e.target.src);
+    } else {
+      (window.__RUN_ERRORS__ || (window.__RUN_ERRORS__ = [])).push(String(e.message || e));
+    }
+  }, true);
+</script>
+</head>
+<body style="font:12px monospace;background:#111;color:#ddd;margin:0;padding:12px">
+<pre id="out">running...</pre>
+<script src="assert.js"></script>
+<script src="../level.js"></script>
+<script src="../physics.js"></script>
+<script src="smoke.test.js"></script>
+<script src="physics.test.js"></script>
+<script src="replay.js"></script>
+<script src="replay.test.js"></script>
+<!-- 渲染/HUD/输入/音频/装配这五层以前只被 fetch 当**源码文本**预取（凑 SOURCES 的键数门禁），
+     也就是说它们**一次都没被执行过**：实测把 HUD 改成忽略 camY、把相机死区上界改成 100、
+     在 render.js 里漏改一个 wy 调用点、把音频调度器改成相对累加，四条变异全都全绿。
+     tests/render.test.js 要驱动**真实的**这五层，所以这里必须真正加载它们。 -->
+<script src="../render.js"></script>
+<script src="../hud.js"></script>
+<script src="../input.js"></script>
+<script src="../audio.js"></script>
+<script src="../main.js"></script>
+<script src="render.test.js"></script>
+<script>
+  // 每加一个任务就把这个数字改成"到本任务为止应有的用例总数"（计划里每个任务的
+  // Step 4 都写了预期 pass 数）。数字对不上 = 有用例文件抛异常或没注册上。
+  //
+  // Task 8 起 run() 之前要等源码预取完成（D1 要读 physics.js 的源码文本），
+  // 所以门禁数字挪进轮询循环里、**run() 的上面那一行**——顺序反了门禁就形同虚设。
+  // waited > 40 是兜底：预取没凑齐 6 个键时（静态服务器不可达）也照常跑，
+  // 这时 D1 会自己报"需要 harness 预取的源码字符串"，不会把整个页面卡死。
+  var waited = 0;
+  (function wait() {
+    if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
+      GD_ASSERT.expect_tests(29);
+      var res = GD_ASSERT.run();
+      res.loadErrors = window.__LOAD_ERRORS__ || [];
+      res.runErrors = window.__RUN_ERRORS__ || [];
+      res.sources = Object.keys(GD_ASSERT.SOURCES);
+      document.getElementById('out').textContent = JSON.stringify(res, null, 1);
+      return;
+    }
+    waited++; setTimeout(wait, 25);
+  })();
+</script>
+</body>
+</html>
+```
+
+### Step 3: 跑测试
+
+预期 `pass: 29, fail: 0, registered: 29, runErrors: []`，`loadErrors: []`。
+
+### Step 4: Commit
+
+```bash
+cd "C:/Users/user/Documents/My Games/drgame" && git add tests/render.test.js tests/harness.html render.js hud.js input.js audio.js main.js physics.js tests/assert.js tests/physics.test.js docs/superpowers/plans/2026-11-01-geometry-dash-clone.md && git commit -m "fix: 渲染层自动化覆盖 + 音频过期音、输入来源覆盖、过期注释"
+```

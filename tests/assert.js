@@ -66,8 +66,9 @@ window.GD_ASSERT = (function () {
 // 源码预取：D1 要静态检查 physics.js 里有没有渲染/输入/音频层的引用，
 // 而 harness 里跑的是**已经执行过**的脚本，拿不到源码文本。
 // fetch 拿回来的是同一份文件的原文，所以 D1 断的就是磁盘上那份代码。
-// 404 也算数（fetch 对 404 是 resolve 不是 reject）：render/hud/input/audio 还没建，
-// 但 SOURCES 的键数必须凑够 6，harness 的轮询条件才成立。
+// fetch 对 404 是 resolve 不是 reject，所以缺文件不会报错、只会少一个键——
+// 下面这 6 个文件现在**都存在**了，但 SOURCES 的键数必须凑够 6，
+// harness 的轮询条件（等预取完成再 run）才成立。少一个键 → 轮询超时 → 用例不跑。
 GD_ASSERT.SOURCES = {};
 (function () {
   var files = ['../physics.js', '../level.js', '../render.js', '../hud.js', '../input.js', '../audio.js'];

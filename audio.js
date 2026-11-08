@@ -63,16 +63,34 @@ window.GD_Audio = (function () {
     s.connect(f); env(f, t, dur, peak); s.start(t);
   }
 
+  // 调度器只排"还没过期"的音符。
+  // 为什么：Chrome 把后台标签页的 setInterval 压到约 1 Hz，回调再跑时 nextNote
+  // 可能落后几十秒（实测后台 30 s 后第一次回调要补 606 个音符，其中 601 个时间点在过去）。
+  // WebAudio 的 start(t) 在 t <= currentTime 时等于"立刻响"，于是这一批过期音会在
+  // 同一瞬间炸响、几百个节点同时启动——听起来是"炸响一声"，机器上是几百个节点。
+  // 所以过期的音**只走相位**（step16++），不建节点。
+  // 相位必须照旧前进：节拍网格锚在启动时的 ctx.currentTime 上，
+  // 丢音不等于丢拍子——否则整首曲子的强弱规律会从头再来一遍。
   function schedule() {
-    while (nextNote < ctx.currentTime + 0.15) {
+    var now = ctx.currentTime;
+    // 落后太多时（后台标签页）不要一格一格补：直接跳到"现在"，
+    // 但 step16 必须按跳过的格数同步前进，否则乐曲的强弱规律会错位。
+    if (nextNote < now) {
+      var skipped = Math.ceil((now - nextNote) / (SPB / 4));
+      nextNote += skipped * (SPB / 4);
+      step16 += skipped;
+    }
+    while (nextNote < now + 0.15) {
       var i = step16 % 64, t = nextNote;
-      if (KICK[i]) hit(t, 120, 0.13, 0.55);
-      if (SNARE[i]) noise(t, 0.11, 0.22);
-      if (HAT[i]) noise(t, 0.03, i % 2 ? 0.05 : 0.09);
-      if (BASS[i]) {
-        var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(bassFreq(BASS[i]), t);
-        var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
-        o.connect(lp); env(lp, t, SPB * 0.45, 0.16); o.start(t); o.stop(t + SPB * 0.5);
+      if (t >= now) {                      // 过期音不排（见上面的注释）
+        if (KICK[i]) hit(t, 120, 0.13, 0.55);
+        if (SNARE[i]) noise(t, 0.11, 0.22);
+        if (HAT[i]) noise(t, 0.03, i % 2 ? 0.05 : 0.09);
+        if (BASS[i]) {
+          var o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(bassFreq(BASS[i]), t);
+          var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
+          o.connect(lp); env(lp, t, SPB * 0.45, 0.16); o.start(t); o.stop(t + SPB * 0.5);
+        }
       }
       nextNote += SPB / 4; step16++;
     }
@@ -110,6 +128,10 @@ window.GD_Audio = (function () {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
     } catch (e) { return; }   // 失败则静音继续，不阻塞游戏（spec §11.1）
     nextNote = ctx.currentTime + 0.05;
+    // step16 必须归零：它记的是"乐曲走到了第几个 16 分音符"。
+    // 不归零的话，stop() 之后重新 start 会从上一句的中间接着响——
+    // 而关卡每次死亡重开都是从 attempt 1 重来的，玩家听到的应该是同一段乐曲的开头。
+    step16 = 0;
     timer = setInterval(schedule, 25);
     started = true;
     wake();

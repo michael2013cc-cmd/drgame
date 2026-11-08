@@ -27,22 +27,26 @@ window.GD_Render = (function () {
     var ctx = canvas.getContext('2d');
     // wasAlive 必须是实例字段而非模块级变量，否则多实例/重开测试会串状态
     // camY（纵向相机）同理：它是"这个渲染实例正在看哪一段"，两个实例各看各的
-    return { canvas: canvas, ctx: ctx, parts: [], debris: [], wasAlive: true, camY: 0 };
-  }
-
-  function resize(canvas) {
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
-    var availW = Math.max(320, window.innerWidth - 16);
-    var availH = Math.max(180, window.innerHeight - 16);
-    var k = Math.max(1, Math.floor(Math.min(availW / LW, availH / LH)));
-    canvas.style.width = (LW * k) + 'px';
-    canvas.style.height = (LH * k) + 'px';
-    canvas.width = Math.round(LW * k * dpr);
-    canvas.height = Math.round(LH * k * dpr);
-    var ctx = canvas.getContext('2d');
-    ctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    return k;
+    var r = { canvas: canvas, ctx: ctx, parts: [], debris: [], wasAlive: true, camY: 0 };
+    // resize 做成**实例方法**而不是模块级函数：它改的是"这个实例的画布"的后备存储与缩放比。
+    // 做成模块级函数就得多收一遍 canvas 参数，传错实例时会把别的画布的缩放改掉——
+    // 而这个错误在画面上根本看不出来（两个画布长得一模一样）。
+    r.resize = function () {
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      var availW = Math.max(320, window.innerWidth - 16);
+      var availH = Math.max(180, window.innerHeight - 16);
+      var k = Math.max(1, Math.floor(Math.min(availW / LW, availH / LH)));
+      r.canvas.style.width = (LW * k) + 'px';
+      r.canvas.style.height = (LH * k) + 'px';
+      r.canvas.width = Math.round(LW * k * dpr);
+      r.canvas.height = Math.round(LH * k * dpr);
+      // 改 canvas.width/height 会把 2D 上下文的全部状态清掉（变换矩阵也在内），
+      // 所以 setTransform 必须在尺寸设好**之后**再设一次。
+      r.ctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0);
+      r.ctx.imageSmoothingEnabled = false;
+      return k;
+    };
+    return r;
   }
 
   function themeOf(st) {
@@ -60,8 +64,8 @@ window.GD_Render = (function () {
 
   // 纵向相机（死区跟随）。
   // 为什么必须有：关卡的飞船段通道设计到 y=10，而画布地面线以上只有 5.8 格——
-  // 通道的天花板本来就在画面外；再加上飞船段没有封顶（玩家能飞到 y=46，见 spec §13），
-  // 固定相机会让玩家**整个飞出画面**，玩家根本看不见自己在哪。
+  // 通道的天花板本来就在画面外，固定相机会让玩家**整个飞出画面**，玩家根本看不见自己在哪。
+  // （封顶之前更糟：飞船段没有天花板，玩家能飞到 y=46，现在封顶了最高也只有 8.72。）
   // 死区而不是直接跟随：直接跟随的话方块段每跳一下画面就抖一下。
   function updateCamera(r, st) {
     var rel = st.y - r.camY;
@@ -105,10 +109,16 @@ window.GD_Render = (function () {
     ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2; ctx.strokeRect(px + 1, py + 1, BLK - 2, BLK - 2);
   }
 
-  function spike(ctx, r, st, x, y, C) {
+  function spike(ctx, r, st, x, y) {
     var px = wx(st, x), py = wy(r, y);
-    ctx.fillStyle = C.fill; ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2;
+    ctx.strokeStyle = '#eaf7ff'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + BLK, py); ctx.lineTo(px + BLK / 2, py - BLK); ctx.closePath();
+    // 内部近黑渐变（spec §8）：平涂实色在深色背景上看不出立体感，
+    // "白描边 + 内部近黑渐变"才是原版的观感。渐变轴跟着世界走（两端都用 wy 定位）。
+    var g = ctx.createLinearGradient(px, py - BLK, px, py);
+    g.addColorStop(0, '#0b1a28');
+    g.addColorStop(1, '#01060c');
+    ctx.fillStyle = g;
     ctx.fill(); ctx.stroke();
   }
 
@@ -145,7 +155,7 @@ window.GD_Render = (function () {
       var sx = wx(st, o.x);
       if (sx < -BLK * 2 || sx > LW + BLK * 2) continue;
       if (o.t === 'block') block(ctx, r, st, o.x, o.y, C);
-      else if (o.t === 'spike') spike(ctx, r, st, o.x, o.y, C);
+      else if (o.t === 'spike') spike(ctx, r, st, o.x, o.y);
       else if (o.t === 'pad_pink' || o.t === 'pad_yellow') {
         rect(ctx, sx, wy(r, o.y) - 5, BLK, 5, o.t === 'pad_pink' ? '#ff5fa8' : '#ffd23f');
       }
@@ -247,5 +257,5 @@ window.GD_Render = (function () {
     if (st.alive) player(ctx, r, st);
   }
 
-  return { create: create, resize: resize, draw: draw, LW: LW, LH: LH, BLK: BLK, GROUND_Y: GROUND_Y };
+  return { create: create, draw: draw, LW: LW, LH: LH, BLK: BLK, GROUND_Y: GROUND_Y };
 })();

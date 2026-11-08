@@ -1,8 +1,8 @@
 GD_ASSERT.test('T1 方块跳跃常数', function () {
   var m = GD_Physics.measureJump(1);
   GD_ASSERT.approx(m.airtime, 0.389, 0.02, '滞空秒');
-  GD_ASSERT.approx(m.apex, 2.17, 0.02, '顶点格');
-  GD_ASSERT.approx(m.span, 4.04, 0.02, '@1x 跳距格');
+  GD_ASSERT.approx(m.apexBlocks, 2.17, 0.02, '顶点格');
+  GD_ASSERT.approx(m.spanBlocks, 4.04, 0.02, '@1x 跳距格');
   // 积分器指纹：上面三条的 2% 相对容差**拦不住**半隐式欧拉。
   // 实测（dt=1/240, v0=22.36, g=115）三种积分的顶点：
   //   velocity-Verlet    2.173668  （对 2.17 偏差 0.17%，对解析值 v0²/(2g)（由 CONST 现算）偏差 0.005%）
@@ -11,7 +11,7 @@ GD_ASSERT.test('T1 方块跳跃常数', function () {
   // 容差下限 2.17×0.98 = 2.1266，欧拉·先减速度 距它只差 0.0008 格。
   // 所以必须再钉一条绝对精度：Verlet 距解析顶点 0.00011，两种欧拉各差约 0.046，
   // 0.002 的绝对容差把两者都关在外面，且不会因浮点噪声误红。
-  GD_ASSERT.near(m.apex,
+  GD_ASSERT.near(m.apexBlocks,
     GD_Physics.CONST.JUMP_V0 * GD_Physics.CONST.JUMP_V0 / (2 * GD_Physics.CONST.G),
     0.002, 'Verlet 积分指纹');
 });
@@ -56,7 +56,7 @@ GD_ASSERT.test('T2 五档门速与速度门切换', function () {
 
 GD_ASSERT.test('T2b 2x 门的真实倍率是 1.243 而非 2', function () {
   var m1 = GD_Physics.measureJump(1), m2 = GD_Physics.measureJump(2);
-  GD_ASSERT.approx(m2.span / m1.span, 1.243, 0.03, '跳距倍率');
+  GD_ASSERT.approx(m2.spanBlocks / m1.spanBlocks, 1.243, 0.03, '跳距倍率');
   // 滞空与水平速度**完全无关**：竖直轨迹只有 v0 和 g，落地步数一模一样。
   // spec §4.1 说原版 0.389 → 0.398 微变，那是原版按帧子步的产物；我们的定步长
   // 实现是解析相等，所以这里钉成精确相等，不要写成 1.023 那种"看着像"的比值。
@@ -100,7 +100,7 @@ GD_ASSERT.test('T5a 撞尖刺死亡并从 0% 重开', function () {
 });
 
 GD_ASSERT.test('T5b 跳过 2 格墙，撞 3 格墙死亡', function () {
-  var span = GD_Physics.measureJump(1).span;      // 用实测跳距，不硬编码
+  var span = GD_Physics.measureJump(1).spanBlocks;      // 用实测跳距，不硬编码
   // 起跳点取"距墙半跳"而不是"距墙一整跳"。一整跳起跳会让人**落在墙上**而不是跳过墙：
   // 实测 6-span≈1.93 起跳时，下落途中 x=5.50 处 LAND_TOL 先把第 1 格的顶（y=1）
   // 当成可站面，把玩家吸到 y=1，等于钻进第 2 格内部，随后被缩小框判死。
@@ -250,7 +250,18 @@ GD_ASSERT.test('L3 对象不越界、无重复、尖刺不重叠、门框不压�
   // 以前这里没有封顶：实测从切船门起一直按住能爬到 y=46.55，从柱阵顶上飞过整个
   // 飞船段，还能以 2x 直接飞过收尾段通关（spec §13 第 11 条）——关卡 1/3 的挑战是空的。
   // 天花板挡在 y=9 之后，飞船最高只到 8.72，按住不放会在 x≈120 撞顶死。
-  var CEIL_Y = 9, CEIL_X0 = 118, CEIL_X1 = 252;
+  // 天花板的范围**现算**，不写死：起点取飞船段的起点，终点取"回方块门"的前一格。
+  // 写死的话关卡一改段落边界，这条断言就拿旧范围去比新数据，测不出任何东西。
+  var shipSeg = null;
+  for (var ss = 0; ss < lv.segments.length; ss++) {
+    if (lv.segments[ss].mode === 'ship') { shipSeg = lv.segments[ss]; break; }
+  }
+  GD_ASSERT.ok(shipSeg, '关卡里必须有飞船段（segments[2]）');
+  var cubeGate = objs.filter(function (o) { return o.t === 'portal_cube'; })[0];
+  GD_ASSERT.ok(cubeGate, '关卡里必须有回方块门');
+  var CEIL_Y = 9;
+  var CEIL_X0 = shipSeg.from;        // 飞船段起点：118 之前玩家还是方块，天花板用不上
+  var CEIL_X1 = cubeGate.x - 1;      // 回方块门在 x=253，天花板铺到 252 才不压门框
   var ceilAt = Object.create(null);
   for (var ci = 0; ci < objs.length; ci++) {
     if (objs[ci].t === 'block' && objs[ci].y === CEIL_Y) ceilAt[objs[ci].x] = true;
@@ -260,6 +271,17 @@ GD_ASSERT.test('L3 对象不越界、无重复、尖刺不重叠、门框不压�
   GD_ASSERT.ok(ceilGaps.length === 0,
     '飞船段天花板必须连续（x∈[' + CEIL_X0 + ',' + CEIL_X1 + '] 每格一块），缺口 ' +
     ceilGaps.length + ' 处: ' + ceilGaps.slice(0, 8).join(','));
+
+  // 反向断言：天花板**只**该铺在 [CEIL_X0, CEIL_X1] 里。
+  // 上面那条（区间内每格都有）是单向的——区间外多铺的块它根本查不到
+  // （实测在 x=260 补一块 y=9，原来的断言照样全绿）。
+  var ceilOut = [];
+  for (var co = 0; co < objs.length; co++) {
+    if (objs[co].t === 'block' && objs[co].y === CEIL_Y &&
+        (objs[co].x < CEIL_X0 || objs[co].x > CEIL_X1)) ceilOut.push(objs[co].x);
+  }
+  GD_ASSERT.ok(ceilOut.length === 0,
+    '天花板只应铺在 x∈[' + CEIL_X0 + ',' + CEIL_X1 + ']，越界的块: ' + ceilOut.join(','));
 
   // 行为层：按住不放也飞不过顶，更不可能以飞船状态通关。
   var holdSt = GD_Physics.create(lv);

@@ -20,11 +20,16 @@ window.GD_Hud = (function () {
     var ay = GROUND_Y - (3 - camY) * BLK;
     if (ax > -80 && ax < LW) ctx.fillText('Attempt ' + st.attempt, ax, ay);
 
-    // 进度条是屏幕固定的，所以不过相机
+    // 进度条是屏幕固定的，所以不过相机。
+    // 圆角（spec §8「底部居中半透明圆角进度条」）：用 roundRect 而不是
+    // fillRect+strokeRect，直角条和原版观感差得一眼能看出来。
     var bw = 340, bx = (LW - bw) / 2, by = LH - 14;
-    ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(bx, by, bw, 7);
-    ctx.fillStyle = '#4cd137'; ctx.fillRect(bx, by, bw * st.percent / 100, 7);
-    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, 6);
+    ctx.fillStyle = 'rgba(255,255,255,.18)';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw, 7, 3.5); ctx.fill();
+    ctx.fillStyle = '#4cd137';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw * st.percent / 100, 7, 3.5); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(bx + 0.5, by + 0.5, bw - 1, 6, 3); ctx.stroke();
     ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
     ctx.fillText(Math.floor(st.percent) + '%', LW / 2, by - 3);
     ctx.textAlign = 'left';

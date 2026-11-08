@@ -13,7 +13,9 @@
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+<!-- width/height 必须写死：脚本跑之前画布默认是 300×150，被 CSS 拉成一闪而过的扁条。
+     resize() 之后会按整数缩放比覆盖成真实尺寸，但那一帧的闪动是省不掉的。 -->
+<canvas id="c" width="427" height="240"></canvas>
 <div id="hint">空格 / 点击 = 跳。按住 = 飞船上升</div>
 <script src="level.js"></script>
 <script src="physics.js"></script>

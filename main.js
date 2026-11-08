@@ -1,9 +1,52 @@
 window.GD_Main = (function () {
   var DT = GD_Physics.CONST.DT, MAX_FRAME = 0.05;   // 切后台钳制（spec §11.2）
 
+  // 回放时一帧推几个物理步。
+  // 为什么不是 1：整关回放要 7695 个物理步，一步一帧就是 7695 帧 ≈ 128 秒墙钟。
+  // 8 步/帧 ≈ 962 帧 ≈ 16 秒。
+  var FEED_STEPS_PER_FRAME = 8;
+
+  // 回放驱动器：每次 frame() 推一帧（FEED_STEPS_PER_FRAME 个物理步）。
+  // 为什么拆成"可一帧一帧手动驱动"：自动化断言是同步的，而 feed() 返回 Promise——
+  // 无头环境里没法 await 一个同步断言。拆成驱动器之后，测试用同一个驱动器
+  // 同步跑完整关，浏览器端再由 requestAnimationFrame 驱动同一份逻辑。
+  function replayDriver(st, seq) {
+    var idx = 0, held = false, guard = 0, done = false, died = null;
+    function frame() {
+      if (done) return false;
+      for (var s = 0; s < FEED_STEPS_PER_FRAME; s++) {
+        while (idx < seq.length && st.time >= seq[idx].at) { held = seq[idx].down === true; idx++; }
+        GD_Physics.step(st, held);
+        if (!st.alive) { died = { x: st.x, y: st.y, attempt: st.attempt }; break; }
+      }
+      // 死亡期间 st.time 不推进，必须用帧数兜底，否则永远不会结束。
+      // 但玩家已经死了就没必要再死等（原来是等满 240*45 帧 ≈ 3 分钟）：立刻收工并带走死亡信息。
+      // 注意**不以"按键序列用完"作为结束条件**：序列用完只说明没有输入了，
+      // 玩家还在关里跑（实测通关序列的最后一个事件在 30.0 s，而关卡到 32.06 s 才结束，
+      // 早收工会停在 94%）。结束条件只有三个：死了、通关了、帧数兜底。
+      guard++;
+      if (died || st.finished || guard > 240 * 45) { done = true; return false; }
+      return true;
+    }
+    function result() { return { state: st, died: died, frames: guard }; }
+    return { frame: frame, result: result, done: function () { return done; } };
+  }
+
+  // 浏览器端入口：把驱动器包成 Promise。
+  function feed(st, seq) {
+    var drv = replayDriver(st, seq);
+    return new Promise(function (res) {
+      function tick() {
+        if (!drv.frame()) { res(drv.result()); return; }
+        requestAnimationFrame(tick);
+      }
+      tick();
+    });
+  }
+
   function boot(canvas) {
     var r = GD_Render.create(canvas);
-    GD_Render.resize(canvas);
+    r.resize();
     var st = GD_Physics.create(GD_Level.crossbeat);
     var input = GD_Input.create(canvas);
     var acc = 0, last = performance.now(), fps = 60, fpsAcc = 0, fpsN = 0, booted = false;
@@ -33,7 +76,7 @@ window.GD_Main = (function () {
     }
     requestAnimationFrame(frame);
 
-    window.addEventListener('resize', function () { GD_Render.resize(canvas); });
+    window.addEventListener('resize', function () { r.resize(); });
 
     return st;
   }
@@ -45,23 +88,10 @@ window.GD_Main = (function () {
     st = boot(canvas);
     window.__GD_TEST__ = {                                        // spec §12
       step: function (n) { for (var i = 0; i < n; i++) GD_Physics.step(st, true); return st; },
-      feed: function (seq) {
-        var idx = 0, held = false, guard = 0;
-        return new Promise(function (res) {
-          function tick() {
-            while (idx < seq.length && st.time >= seq[idx].at) { held = seq[idx].down === true; idx++; }
-            GD_Physics.step(st, held);
-            // 死亡期间 st.time 不推进，必须用帧数兜底，否则 Promise 永不 resolve
-            guard++;
-            if (idx >= seq.length || st.finished || guard > 240 * 45) { res(st); return; }
-            requestAnimationFrame(tick);
-          }
-          tick();
-        });
-      },
+      feed: function (seq) { return feed(st, seq); },
       measure: function () { return GD_Physics.measureJump(1); },
       state: function () { return { x: st.x, y: st.y, mode: st.mode, speed: st.speedKey, alive: st.alive, percent: st.percent }; }
     };
   }
-  return { install: install };
+  return { install: install, feed: feed, replayDriver: replayDriver };
 })();
