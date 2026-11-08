@@ -984,179 +984,7 @@ GD_ASSERT.test('L3 对象不越界、无重复、尖刺不重叠、门框不压�
 
 `level.js`——段落与 spec §7 一一对应。对象坐标按"一次跳 = 4.02 格"的时间网格摆放，间距取拍数（154 BPM，一拍 0.3896 s，@1x 一拍走 4.046 格）：
 
-window.GD_Level = (function () {
-  var BPM = 154;
-
-  function spikeRun(startX, count, y) {
-    var a = [];
-    for (var i = 0; i < count; i++) a.push({ x: startX + i, y: y || 0, t: 'spike' });
-    return a;
-  }
-  // cube 段的柱子限高 2 格：单跳顶点 2.17，3 格柱实测 65 个起跳阈值 0 个能通过。
-  // 长按能蹭过去不算合法路线——那是 LAND_TOL 把人吸上墙肩后再起跳的副作用。
-  function pillar(x, h) {
-    var a = [];
-    for (var i = 0; i < h; i++) a.push({ x: x, y: i, t: 'block' });
-    return a;
-  }
-
-  var objects = [].concat(
-    // 开场 0–40：单尖刺 → 双尖刺，每 2 拍一个障碍（1 拍 = 4.046 格，8 格 = 1.98 拍）
-    spikeRun(14, 1),
-    spikeRun(22, 1),
-    spikeRun(30, 2),
-
-    // 推进 40–110：柱阵 + 环 + 跳板
-    pillar(42, 2),
-    spikeRun(48, 1),
-    { x: 52, y: 2.0, t: 'ring_pink' },
-    pillar(58, 2),
-    spikeRun(64, 2),
-    { x: 70, y: 0, t: 'pad_pink' },
-    spikeRun(74, 1, 0), spikeRun(75, 1, 0),
-    pillar(82, 2),
-    { x: 88, y: 2.4, t: 'ring_yellow' },
-    spikeRun(94, 2),
-    pillar(100, 2),
-    spikeRun(106, 1),
-
-    // 切船 110–118：门都贴着地面（y=0.5），与地面线齐平
-    { x: 112, y: 0.5, t: 'portal_ship' },
-    { x: 116, y: 0.5, t: 'speed_2x' },
-
-    // 飞行 118–254：上下柱阵通道。@2x 一拍走 12.914*0.3896 = 5.03 格
-    // 通道净空 4 格，玩家 1 格，容错 3 格
-    pillar(126, 4), { x: 126, y: 8, t: 'block' }, { x: 126, y: 9, t: 'block' }, { x: 126, y: 10, t: 'block' },
-    { x: 134, y: 0, t: 'block' }, { x: 134, y: 1, t: 'block' }, { x: 134, y: 7, t: 'block' }, { x: 134, y: 8, t: 'block' },
-    pillar(142, 5), { x: 142, y: 9, t: 'block' }, { x: 142, y: 10, t: 'block' },
-    { x: 150, y: 0, t: 'block' }, { x: 150, y: 1, t: 'block' }, { x: 150, y: 2, t: 'block' }, { x: 150, y: 8, t: 'block' },
-    pillar(158, 3), { x: 158, y: 9, t: 'block' },
-    { x: 166, y: 0, t: 'block' }, { x: 166, y: 1, t: 'block' }, { x: 166, y: 7, t: 'block' }, { x: 166, y: 8, t: 'block' },
-    pillar(174, 6), { x: 174, y: 10, t: 'block' },
-    { x: 182, y: 0, t: 'block' }, { x: 182, y: 6, t: 'block' }, { x: 182, y: 7, t: 'block' },
-    pillar(190, 4), { x: 190, y: 9, t: 'block' }, { x: 190, y: 10, t: 'block' },
-    { x: 198, y: 0, t: 'block' }, { x: 198, y: 1, t: 'block' }, { x: 198, y: 8, t: 'block' },
-    pillar(206, 5), { x: 206, y: 10, t: 'block' },
-    { x: 214, y: 0, t: 'block' }, { x: 214, y: 1, t: 'block' }, { x: 214, y: 2, t: 'block' }, { x: 214, y: 7, t: 'block' },
-    pillar(222, 3), { x: 222, y: 8, t: 'block' }, { x: 222, y: 9, t: 'block' },
-    { x: 230, y: 0, t: 'block' }, { x: 230, y: 1, t: 'block' }, { x: 230, y: 9, t: 'block' },
-    pillar(238, 4), { x: 238, y: 10, t: 'block' },
-
-    // 回方块：切船门在 x=112、降速门在 x=116，两扇门都贴地（y=0.5）。
-    // 触发点是玩家前沿（x+0.5）碰到门的 x，所以实际切换发生在 x≈111.5 / 115.5，
-    // 段落的 118 / 254 只是主题分段点——两者不是一回事，别再写成"严格相等"。
-    // 回方块这扇门同样必须贴地：触发框从 o.y 往上延伸，玩家贴地时框是 [0,1]，
-    // 门放在 y=1.0 时 1 > 1 不成立，门永远不触发——实测贴地跑过 x=253 仍是飞船模式，
-    // 随后撞死在 x=264 的第一根尖刺。
-    // Task 7 把触发框改成了**通高**（GATE_H = 256 格，框是 [0.5, 256.5]）：
-    // 通道内的玩家（y≲11）和出口前一小段内起飞的人都能命中。
-    // 但这**不是**"飞到多高都不会错过"——飞船段没有封顶，玩家理论上能飞到 y≥256.5
-    // 仍会错过这扇门（那个洞记在 spec §13，要靠关卡封顶解决，不是靠门框）。
-    // 门的底边仍是 0.5——不能改成 0，否则悬在半空的门会被地面上的玩家触发，语义就错了。
-    { x: 253, y: 0.5, t: 'portal_cube' },
-    { x: 254, y: 0.5, t: 'speed_1x' },
-
-    // 收尾 258–360：密集节奏段
-    spikeRun(264, 1),
-    spikeRun(272, 2),
-    pillar(280, 2),
-    spikeRun(286, 1), { x: 288, y: 2.0, t: 'ring_pink' },
-    spikeRun(294, 2),
-    { x: 300, y: 0, t: 'pad_pink' },
-    spikeRun(304, 1), spikeRun(305, 1),
-    pillar(312, 2),
-    spikeRun(318, 2),
-    pillar(324, 2),
-    spikeRun(330, 1),
-    { x: 334, y: 2.4, t: 'ring_yellow' },
-    spikeRun(340, 2),   // 三连刺打不过：y>=0.55 的窗口只有 3.49 格，三刺要 3.55
-    { x: 360, y: 0, t: 'finish' }   // 旗子与 endBlock 同点：越过 x=360 的瞬间判通关
-  );
-
-  var crossbeat = {
-    meta: { name: 'Crossbeat', bpm: BPM, endBlock: 360 },
-    segments: [
-      { from: 0,   to: 110, mode: 'cube', speed: 1, theme: 'blue'   },   // 10.591 s
-      { from: 110, to: 118, mode: 'cube', speed: 1, theme: 'blue'   },   //  0.770 s  切船过渡
-      { from: 118, to: 254, mode: 'ship', speed: 2, theme: 'violet' },   // 10.531 s
-      { from: 254, to: 360, mode: 'cube', speed: 1, theme: 'blue'   }    // 10.206 s
-    ],
-    // 合计 32.098 s，落在 L2 测试的 32.0 ± 2% 容差内
-    objects: objects
-  };
-
-  var VALID_TYPES = ['spike', 'block', 'pad_pink', 'pad_yellow', 'ring_pink', 'ring_yellow',
-                     'portal_ship', 'portal_cube', 'speed_1x', 'speed_2x', 'speed_3x', 'speed_4x', 'finish'];
-  // 合法门速。写在这里而不是从 physics 读：level.js 是纯数据层，不能反向依赖物理层。
-  var VALID_SPEEDS = [0.5, 1, 2, 3, 4];
-
-  function validate(lv) {
-    var errs = [];
-    if (!lv.meta) errs.push('缺 meta');
-    if (!Array.isArray(lv.objects)) errs.push('缺 objects 数组');
-    if (!Array.isArray(lv.segments)) errs.push('缺 segments 数组');
-    if (lv.meta && typeof lv.meta.endBlock !== 'number') errs.push('meta.endBlock 非数字');
-    if (lv.objects) {
-      for (var i = 0; i < lv.objects.length; i++) {
-        var o = lv.objects[i];
-        if (typeof o.x !== 'number' || typeof o.y !== 'number') errs.push('对象缺 x/y: #' + i);
-        if (VALID_TYPES.indexOf(o.t) < 0) errs.push('未知类型: ' + o.t + ' #' + i);
-        // 对象不能落在终点之后：那样它永远不会被玩家碰到，等于白放一个障碍
-        if (lv.meta && typeof lv.meta.endBlock === 'number' && o.x > lv.meta.endBlock) {
-          errs.push('对象越过终点: ' + o.t + '@' + o.x);
-        }
-      }
-    }
-    if (lv.segments) {
-      for (var s = 0; s < lv.segments.length; s++) {
-        var sg = lv.segments[s];
-        if (['cube', 'ship'].indexOf(sg.mode) < 0) errs.push('非法 mode: ' + sg.mode);
-        if (typeof sg.from !== 'number' || typeof sg.to !== 'number') errs.push('段落缺 from/to #' + s);
-        else {
-          if (sg.to <= sg.from) errs.push('段落 from>=to #' + s + ' (' + sg.from + '→' + sg.to + ')');
-          if (VALID_SPEEDS.indexOf(sg.speed) < 0) errs.push('非法 speed: ' + sg.speed + ' #' + s);
-        }
-      }
-      // 段落必须首尾相接且从 0 开始：Task 12 的 tOf() 按段落做分段积分，
-      // 段落之间留缝会让"到达 x 的时刻"整体算偏。
-      if (lv.segments.length && lv.segments[0].from !== 0) errs.push('第一个段落必须从 0 开始');
-      for (var k = 1; k < lv.segments.length; k++) {
-        if (lv.segments[k].from !== lv.segments[k - 1].to) {
-          errs.push('段落不连续: #' + (k - 1) + ' 结束于 ' + lv.segments[k - 1].to +
-                    '，#' + k + ' 从 ' + lv.segments[k].from + ' 开始');
-        }
-      }
-    }
-    return errs;
-  }
-
-  return { crossbeat: crossbeat, validate: validate, VALID_TYPES: VALID_TYPES };
-})();
-})();
-```
-
-- [ ] **Step 4: 跑测试确认通过**
-
-预期：`pass: 11, fail: 0, registered: 11, runErrors: []`。`loadErrors` 只剩 replay.js / replay.test.js 两条。
-
-若 `L2` 红：段落 `from/to/speed` 与上表注释不一致，按注释修。
-
-**与 spec §7 的偏差（有意为之）**：§7 的表格把关卡切成 6 段，其中"切船 110–118""回方块 250–258"是描述性的过渡区间，没有独立的 mode/speed。这里压成 4 段（118 / 254），让**段落边界与主题切换点对齐**，方便 `replay.js` 的 `tOf()` 分段积分与物理实际走的轨迹对上。总时长 32.098 s，仍在 §7 的 32.0 s ±2% 内。
-
-**注意：段落边界 ≠ 传送门触发点（2026-11-08 更正）**。传送门与速度门是在**玩家前沿（x+0.5）碰到门的 x** 时才生效，所以实际切换点是：
-
-| 事件 | 门的位置 | 实际生效 x |
-|---|---|---|
-| 切船（cube→ship） | `portal_ship` x=112 | ≈111.5 |
-| 提速（1x→2x） | `speed_2x` x=116 | ≈115.5 |
-| 回方块（ship→cube） | `portal_cube` x=253 | ≈252.5 |
-| 降速（2x→1x） | `speed_1x` x=254 | ≈253.5 |
-
-段落断点 118 / 254 与它们差 0.5 格。旧文档写成"段落边界与传送门 x 坐标严格相等（118 与 254）"是**错的**——那句话连着 handoff 一起传了下来。`replay.js` 的 `tOf()` 因此改成**从关卡里的速度门推导档位**，不再抄一份手写的段表。
-
-- [ ] **Step 5: Commit**
-
-```bash
+```js
 window.GD_Level = (function () {
   var BPM = 154;
 
@@ -1338,7 +1166,31 @@ window.GD_Level = (function () {
 
   return { crossbeat: crossbeat, validate: validate, VALID_TYPES: VALID_TYPES };
 })();
+```
 
+- [ ] **Step 4: 跑测试确认通过**
+
+预期：`pass: 11, fail: 0, registered: 11, runErrors: []`。`loadErrors` 只剩 replay.js / replay.test.js 两条。
+
+若 `L2` 红：段落 `from/to/speed` 与上表注释不一致，按注释修。
+
+**与 spec §7 的偏差（有意为之）**：§7 的表格把关卡切成 6 段，其中"切船 110–118""回方块 250–258"是描述性的过渡区间，没有独立的 mode/speed。这里压成 4 段（118 / 254），让**段落边界与主题切换点对齐**，方便生成回放序列时按段落分段积分、与物理实际走的轨迹对上（序列已生成好，存于 `tests/replay.js`）。总时长 32.098 s，仍在 §7 的 32.0 s ±2% 内。
+
+**注意：段落边界 ≠ 传送门触发点（2026-11-08 更正）**。传送门与速度门是在**玩家前沿（x+0.5）碰到门的 x** 时才生效，所以实际切换点是：
+
+| 事件 | 门的位置 | 实际生效 x |
+|---|---|---|
+| 切船（cube→ship） | `portal_ship` x=112 | ≈111.5 |
+| 提速（1x→2x） | `speed_2x` x=116 | ≈115.5 |
+| 回方块（ship→cube） | `portal_cube` x=253 | ≈252.5 |
+| 降速（2x→1x） | `speed_1x` x=254 | ≈253.5 |
+
+段落断点 118 / 254 与它们差 0.5 格。旧文档写成"段落边界与传送门 x 坐标严格相等（118 与 254）"是**错的**——那句话连着 handoff 一起传了下来。所以生成通关序列时必须**从关卡里的速度门推导档位**（预研的生成器就是这么做的，`tests/replay.js` 里只存生成好的事件表），不能再抄一份手写的段表。
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd "C:/Users/user/Documents/My Games/drgame" && git add level.js tests docs/superpowers/plans/2026-11-01-geometry-dash-clone.md && git commit -m "feat: Crossbeat 关卡数据与校验（Task 5）"
 ```
 
 ---
@@ -2122,13 +1974,15 @@ GD_ASSERT.SOURCES = {};
 })();
 ```
 
-`harness.html` 的 `GD_ASSERT.run()` 调用前需等预取完成——把末尾脚本改为（`expect_tests` 涨到 20，且必须在 `run()` **之前**调用，所以它落在轮询循环里 `run()` 的那一行上面，不是循环外面）：
+`harness.html` 的 `GD_ASSERT.run()` 调用前需等预取完成——把末尾脚本改为（`expect_tests` 的数字跟着用例总数走：
+Task 8 落地时是 20，Task 12 加 T3 后是 21，下面这块按**当前**文件写成 21。它必须在 `run()` **之前**调用，
+所以落在轮询循环里 `run()` 的那一行上面，不是循环外面）：
 
 ```js
   var waited = 0;
   (function wait() {
     if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
-      GD_ASSERT.expect_tests(20);
+      GD_ASSERT.expect_tests(21);
       var res = GD_ASSERT.run();
       res.loadErrors = window.__LOAD_ERRORS__ || [];
       res.runErrors = window.__RUN_ERRORS__ || [];
@@ -2140,9 +1994,12 @@ GD_ASSERT.SOURCES = {};
   })();
 ```
 
+（上面这块是 **Task 12 之后的当前内容**：Task 8 落地时 `expect_tests` 是 20，Task 12 加 T3 之后涨到 21。
+除这个数字外，块与 `tests/harness.html` 逐字节一致——所以 Task 12 改门禁时必须回来同步这里。）
+
 - [ ] **Step 2: 跑测试确认通过**
 
-预期：`pass: 20, fail: 0, registered: 20, runErrors: []`。
+预期（Task 8 当时的数字；Task 12 加 T3 后是 `pass: 21 / registered: 21`）：`pass: 20, fail: 0, registered: 20, runErrors: []`。
 
 **T6b 与计划原版的偏差（2026-11-08 实测后修正）**：计划原版的 T6b 跑满 `240*60` 步之后取 `st.x`，
 并断 `near(st.x, 0, 12)`。实测那个取样点**落在死亡延时里**（`alive=false`、`deadTimer=0.45`、
@@ -3043,11 +2900,13 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.j
 ## Task 12: 通关机器人（T3）
 
 这是证明关卡人类可通的唯一手段，也是本计划里最可能反复的一任务。
+**2026-11-08 的预研已经把它做完了**：通关序列生成并独立验证过，本任务只剩“接进测试 + 验证”，
+不再需要手写生成器，也不需要靠“先跑红再迭代”把序列试出来。
 
 **Files:**
 - Create: `tests/replay.js`
 - Create: `tests/replay.test.js`
-- Modify: `tests/harness.html`（两个 `<script src>` 标签 Task 1 就已写好，本任务只把 `expect_tests` 涨到 20）
+- Modify: `tests/harness.html`（两个 `<script src>` 标签 Task 1 就已写好，本任务只把 `expect_tests` 从 20 涨到 21）
 
 ### 预研结论（2026-11-08 接手后补做，**先读这段，能省掉一整轮试错**）
 
@@ -3058,7 +2917,8 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.j
    `portal_ship@112 → x111.5`、`speed_2x@116 → x115.5`、`portal_cube@253 → x252.5`、`speed_1x@254 → x253.5`。
    朴素的 `x / 10.386` 在 x=254 偏 **+2.62 s**；按段表算也还偏 **+0.047 s**（118 vs 115.5 与 254 vs 253.5 正好抵消），
    而双刺的可通过窗口只有 0.825 格（≈0.079 s）——0.047 s 已经吃掉一大半。
-   → 本任务的 `tOf()` **从关卡里的速度门推导档位**（Step 4 的初版代码已经这么写了），别再手写段表。
+   → 当年生成这条序列的脚本里，`tOf()` **从关卡里的速度门推导档位**，别再手写段表；
+   `tests/replay.js` 存的是生成好的事件表（没有 `tOf()`），改关卡后才需要重新生成。
 
 2. **两个速度门是"隐形杀手"，断言必须加时长与切换点。**
    > **下面这三条是旧门高（2.6 格）下的实测结论。Task 7 起门框通高（`GATE_H = 256`），
@@ -3067,7 +2927,7 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.j
    `portal_cube@253` / `speed_1x@254` 要求在 x252.5–255.9 前**俯冲回低处**；漏前者 → 仍是飞船 → 撞死 x=264 的第一根尖刺；
    漏后者 → 后半段跑 2x → **30.05 s**。
    **这两种"假通关"的 `finished` 也是 true**，光断 `finished`/`percent` 会放过它们。
-   → Step 1 的断言要加上 `time ∈ [31.36, 32.64]` 和四个切换点。
+   → Step 2 的断言要加上 `time ∈ [31.36, 32.64]` 和四个切换点。
    **Task 7 之后**：门框通高后 `speed_2x@116` 不再要求 y<2.1，`speed_1x@254` 也不再要求俯冲回低处；
    上面"漏掉 → 34.66 s / 30.05 s"只是**旧门高下的现象记录**，但**断言仍然保留**——
    将来若有人把门高改小，时长断言是唯一的警报。
@@ -3091,9 +2951,196 @@ cd "C:/Users/user/Documents/My Games/drgame" && git add input.js audio.js main.j
   刺宽 1/2 格 19/9 可过，**刺宽 3 格及以上 0/65**（需连续 y≥0.55 跨度 3.550 格，实测窗口只有 3.462 格）。
   关卡里已经没有 3 格柱和 3 连刺了，别再放回去。
 
-- [ ] **Step 1: 写回放测试**
+- [ ] **Step 1: 接进预研产出的回放序列**
 
-`tests/replay.test.js`（这是最后一条用例，累计 21 条；把 `GD_ASSERT.expect_tests(...)` 改成 21）：
+`tests/replay.js` 整文件。它把 `docs/superpowers/research/t12-replay-fixture.js` 里从 `window.GD_Replay` 起的
+170 个事件**逐字节**复制过来，只把文件头换成下面这条短注释——验证数据与重新生成的方法留在 fixture 里，
+不在这里抄第二份（两份迟早会不同步，而这份序列的注释正是“什么时候必须重做”的唯一记录）：
+
+```js
+// 由预研生成，来源与验证数据见 docs/superpowers/research/t12-replay-fixture.js；失效了要重新生成，不能靠改容差糊过去。
+window.GD_Replay = (function () {
+  var crossbeat = [
+    { t: 1.1187, d: true },
+    { t: 1.1229, d: false },
+    { t: 1.8896, d: true },
+    { t: 1.8938, d: false },
+    { t: 2.7563, d: true },
+    { t: 4.1021, d: false },
+    { t: 4.5646, d: true },
+    { t: 4.5687, d: false },
+    { t: 5.4771, d: true },
+    { t: 5.4813, d: false },
+    { t: 6.0313, d: true },
+    { t: 6.0354, d: false },
+    { t: 7.0687, d: true },
+    { t: 7.0729, d: false },
+    { t: 7.7771, d: true },
+    { t: 8.0313, d: false },
+    { t: 8.9187, d: true },
+    { t: 11.1896, d: false },
+    { t: 11.2396, d: true },
+    { t: 11.2896, d: false },
+    { t: 11.3396, d: true },
+    { t: 11.3896, d: false },
+    { t: 11.4896, d: true },
+    { t: 11.5396, d: false },
+    { t: 11.6396, d: true },
+    { t: 11.6896, d: false },
+    { t: 11.7396, d: true },
+    { t: 11.7896, d: false },
+    { t: 11.8396, d: true },
+    { t: 11.8896, d: false },
+    { t: 12.0396, d: true },
+    { t: 12.0896, d: false },
+    { t: 12.1396, d: true },
+    { t: 12.2896, d: false },
+    { t: 12.3396, d: true },
+    { t: 12.3896, d: false },
+    { t: 12.4396, d: true },
+    { t: 12.6896, d: false },
+    { t: 12.8396, d: true },
+    { t: 12.8896, d: false },
+    { t: 12.9396, d: true },
+    { t: 12.9896, d: false },
+    { t: 13.0396, d: true },
+    { t: 13.0896, d: false },
+    { t: 13.2396, d: true },
+    { t: 13.3396, d: false },
+    { t: 13.3896, d: true },
+    { t: 13.4896, d: false },
+    { t: 13.5396, d: true },
+    { t: 13.5896, d: false },
+    { t: 13.6396, d: true },
+    { t: 13.7396, d: false },
+    { t: 13.7896, d: true },
+    { t: 13.8396, d: false },
+    { t: 13.8896, d: true },
+    { t: 13.9896, d: false },
+    { t: 14.0896, d: true },
+    { t: 14.1896, d: false },
+    { t: 14.2396, d: true },
+    { t: 14.2896, d: false },
+    { t: 14.4396, d: true },
+    { t: 14.5396, d: false },
+    { t: 14.5896, d: true },
+    { t: 14.6896, d: false },
+    { t: 14.7396, d: true },
+    { t: 14.8396, d: false },
+    { t: 14.8896, d: true },
+    { t: 14.9396, d: false },
+    { t: 14.9896, d: true },
+    { t: 15.2396, d: false },
+    { t: 15.3896, d: true },
+    { t: 15.4396, d: false },
+    { t: 15.5396, d: true },
+    { t: 15.5896, d: false },
+    { t: 15.9396, d: true },
+    { t: 16.0396, d: false },
+    { t: 16.0896, d: true },
+    { t: 16.4396, d: false },
+    { t: 16.5396, d: true },
+    { t: 16.5896, d: false },
+    { t: 16.6396, d: true },
+    { t: 16.6896, d: false },
+    { t: 16.7896, d: true },
+    { t: 16.8396, d: false },
+    { t: 16.9396, d: true },
+    { t: 16.9896, d: false },
+    { t: 17.0396, d: true },
+    { t: 17.1396, d: false },
+    { t: 17.1896, d: true },
+    { t: 17.2396, d: false },
+    { t: 17.2896, d: true },
+    { t: 17.3896, d: false },
+    { t: 17.4396, d: true },
+    { t: 17.6396, d: false },
+    { t: 17.7396, d: true },
+    { t: 17.7896, d: false },
+    { t: 17.8896, d: true },
+    { t: 17.9896, d: false },
+    { t: 18.1896, d: true },
+    { t: 18.2896, d: false },
+    { t: 18.3396, d: true },
+    { t: 18.4896, d: false },
+    { t: 18.5396, d: true },
+    { t: 18.5896, d: false },
+    { t: 18.6396, d: true },
+    { t: 18.7396, d: false },
+    { t: 18.7896, d: true },
+    { t: 18.8396, d: false },
+    { t: 18.8896, d: true },
+    { t: 18.9396, d: false },
+    { t: 18.9896, d: true },
+    { t: 19.0396, d: false },
+    { t: 19.0896, d: true },
+    { t: 19.1396, d: false },
+    { t: 19.1896, d: true },
+    { t: 19.2396, d: false },
+    { t: 19.2896, d: true },
+    { t: 19.3896, d: false },
+    { t: 19.4396, d: true },
+    { t: 19.4896, d: false },
+    { t: 19.5396, d: true },
+    { t: 19.5896, d: false },
+    { t: 19.6396, d: true },
+    { t: 19.6896, d: false },
+    { t: 19.7396, d: true },
+    { t: 19.7896, d: false },
+    { t: 19.8396, d: true },
+    { t: 19.9896, d: false },
+    { t: 20.0396, d: true },
+    { t: 20.0896, d: false },
+    { t: 20.1396, d: true },
+    { t: 20.1896, d: false },
+    { t: 20.2896, d: true },
+    { t: 20.3896, d: false },
+    { t: 20.4396, d: true },
+    { t: 20.4896, d: false },
+    { t: 20.7896, d: true },
+    { t: 20.8396, d: false },
+    { t: 20.8896, d: true },
+    { t: 21.1396, d: false },
+    { t: 21.1896, d: true },
+    { t: 21.2896, d: false },
+    { t: 21.3396, d: true },
+    { t: 21.3896, d: false },
+    { t: 21.4396, d: true },
+    { t: 21.5396, d: false },
+    { t: 21.5896, d: true },
+    { t: 21.6396, d: false },
+    { t: 21.6896, d: true },
+    { t: 21.7312, d: false },
+    { t: 22.5896, d: true },
+    { t: 22.5938, d: false },
+    { t: 23.4563, d: true },
+    { t: 24.2563, d: false },
+    { t: 24.7104, d: true },
+    { t: 24.7146, d: false },
+    { t: 25.5729, d: true },
+    { t: 25.5771, d: false },
+    { t: 26.6104, d: true },
+    { t: 26.6146, d: false },
+    { t: 27.2437, d: true },
+    { t: 27.9646, d: false },
+    { t: 28.3979, d: true },
+    { t: 28.4021, d: false },
+    { t: 28.6479, d: true },
+    { t: 28.6521, d: false },
+    { t: 29.1146, d: true },
+    { t: 29.1187, d: false },
+    { t: 30.0021, d: true },
+    { t: 30.0063, d: false }
+  ];
+  return { crossbeat: crossbeat };
+})();
+```
+
+- [ ] **Step 2: 写回放测试**
+
+`tests/replay.test.js` 整文件。这是最后一条用例，累计 21 条；同步把 `tests/harness.html` 里的
+`expect_tests(20)` 改成 21。断言不只断通关：时长窗 `[31.36, 32.64]` 和四个切换点必须一起断——
+漏掉速度门的两种“假通关”的 `finished` 同样是 true：
 
 ```js
 GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
@@ -3129,131 +3176,25 @@ GD_ASSERT.test('T3 回放序列通关 Crossbeat', function () {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [ ] **Step 3: 跑测试确认通过**
 
-预期：`FAIL T3 ... 未通关`，并给出首次死亡的 x 坐标；`registered: 20, fail: 1, runErrors: []`。**这个 x 就是下一步要修的关卡位置。**
+预期：`pass: 21, fail: 0, registered: 21, runErrors: []`，T3 显示通关。
+`loadErrors` 必须是 **`[]`**——`replay.js` / `replay.test.js` 至此都已存在，Task 1 起那两条 404 就是它们的前向引用。
+若 `loadErrors` 不为空，那是真的加载失败（文件名拼错或 `<script src>` 漏了），不是预期，不要当成“还没实现”。
 
-- [ ] **Step 3: 用探针定位每个失败点**
-
-`evaluate_script` 执行，拿到死亡位置附近的所有对象：
-
-```js
-() => {
-  const st = GD_Physics.create(GD_Level.crossbeat);
-  const seq = GD_Replay.crossbeat; let si = 0, held = false;
-  const log = [];
-  for (let n = 0; n < 240 * 40 && st.alive && !st.finished; n++) {
-    while (si < seq.length && seq[si].t <= st.time) { held = seq[si].d; si++; }
-    GD_Physics.step(st, held);
-    log.push({ t: +st.time.toFixed(3), x: +st.x.toFixed(2), y: +st.y.toFixed(2), mode: st.mode, g: st.onGround });
-  }
-  const death = st.alive ? null : st.x;
-  const near = death == null ? [] : GD_Level.crossbeat.objects
-      .filter(o => Math.abs(o.x - death) < 6)
-      .map(o => `${o.t}@${o.x},${o.y}`);
-  return { death: death && +death.toFixed(2), near, percent: +st.percent.toFixed(1), tail: log.slice(-8) };
-}
-```
-
-- [ ] **Step 4: 迭代闭环（死亡点 → 改按键序列或改关卡 → 重跑）**
-
-**先看上面「预研结论」那一节**——本任务初版草稿里的飞船策略（每 0.42 s 按 0.22 s）实测连第一根柱 126 都过不去，
-`tOf()` 的段表边界也差 0.047 s（双刺窗口只有 0.079 s）。预研已经产出一条**验证过通关**的按键序列
-（`finished=true, percent=100, time=32.0625s`，切换点 x=111.520/115.501/252.551/253.519，±1 步扰动 60/88 仍通关），
-它会作为 `docs/superpowers/research/t12-replay-fixture.js` 一并入库，**直接复制成 `tests/replay.js` 的初版**，
-不要手写。复制后按下面三条规则核对，**任何一条不满足就说明物理或回放语义变了，序列必须重新生成**：
-
-1. 时间约定是 `t = (step-0.5)*DT`，配合 `seq[si].t <= st.time` 恰好在第 step 步生效。
-2. 步数上限用 `240*40`（写死 6000 步只能跑到 x≈259，会让 x>254 的整段集体"看起来打不通"）。
-3. 断言要连**时长**和**四个切换点**一起断（Step 1 已经这么写了）——只断 `finished`/`percent` 会放过两种假通关。
-
-规则，按优先级：
-
-1. **跳跃时机类死亡**（撞刺、撞墙脚）→ 修 `tests/replay.js` 的按键时刻。关卡是对的，是"机器人不会玩"。
-2. **物理上不可能**（如某柱阵需要 2.5 格跳高、飞行通道净空 < 玩家 1 格 + 容错）→ 修 `level.js` 的坐标。这是关卡设计错误，必须改关卡。
-   （**预研已经查过：当前关卡没有物理上过不去的障碍**，23 个 cube 组逐组实测全部 ≥9/65，所以这一条大概率用不上。）
-3. 每次只改一处，重跑 Step 2。不要一次改十个点——无法归因。
-
-`tests/replay.js` 初版。
-
-**注意 `tOf()` 必须做分段积分**：关卡中间有 136 格跑在 2x 上，用 `x / 10.386` 一律换算会让 254 之后的每个起跳时刻偏掉约 3 秒——这是最容易在这里踩的坑，且症状（后半段全撞）很容易被误读成"关卡太难"。
-
-```js
-window.GD_Replay = (function () {
-  var SPAN = GD_Physics.measureJump(1).span;      // 4.06 格，实测而非硬编码
-  var S = GD_Physics.CONST.SPEEDS;
-  var LV = GD_Level.crossbeat;
-
-  // 速度档位的生效点是"玩家前沿（x+0.5）碰到速度门的 x"，即门位置 - 0.5。
-  // 必须从关卡数据推导，不要在这里抄第二份档位表：
-  // 段落断点 118/254 与实际生效点 115.5/253.5 并不相同（差 0.05 秒），
-  // 后面每一个起跳时刻都会跟着偏，而且这种偏很容易被误读成"关卡太难"。
-  var GATES = LV.objects
-    .filter(function (o) { return o.t.indexOf('speed_') === 0; })
-    .map(function (o) {
-      return { x: o.x - 0.5, speed: { speed_1x: 1, speed_2x: 2, speed_3x: 3, speed_4x: 4 }[o.t] };
-    })
-    .sort(function (a, b) { return a.x - b.x; });
-
-  function tOf(x) {
-    var t = 0, cur = 0, v = S[LV.segments[0].speed];
-    for (var i = 0; i < GATES.length; i++) {
-      if (x <= GATES[i].x) break;
-      t += (GATES[i].x - cur) / v;
-      cur = GATES[i].x;
-      v = S[GATES[i].speed];
-    }
-    return t + (x - cur) / v;
-  }
-
-  var seq = [];
-  // 越过去：落地点刚过障碍末端，留 0.3 格余量。多宽尖刺阵必须给 width
-  function jumpOver(startX, width) {
-    var t = tOf(startX + (width || 1) - SPAN + 0.3);
-    seq.push({ t: t, d: true });
-    seq.push({ t: t + 0.05, d: false });
-  }
-  // 站上去：顶点 2.17 格出现在起跳后约 2.02 格处，故提前 2.0 格起跳
-  function jumpOntop(x) {
-    var t = tOf(x - 2.0);
-    seq.push({ t: t, d: true });
-    seq.push({ t: t + 0.05, d: false });
-  }
-
-  // 尖刺阵：[起点, 宽度] —— 宽度必须与 level.js 一致。
-  // c54f39d 把 pillar(82,3) / pillar(324,3) / spikeRun(340,3) 都降成了 2，
-  // 这份表当时漏改（计划自查记录第 16 条），照抄会带着过期的障碍宽度。
-  [[14, 1], [22, 1], [30, 2], [48, 1], [64, 2], [74, 2], [94, 2], [106, 1],
-   [264, 1], [272, 2], [286, 1], [294, 2], [304, 2], [318, 2], [330, 1], [340, 2]]
-    .forEach(function (a) { jumpOver(a[0], a[1]); });
-  // 需要站上去的柱阵（2 格高可站，3 格高需借跳板/环）
-  [42, 58, 100, 280, 312].forEach(jumpOntop);
-  // 2 格墙与高台：靠跳板/环，不靠普通跳
-  jumpOver(82, 2);   // pillar(82,2)
-  jumpOver(324, 2);  // pillar(324,2)
-
-  // 飞船段 118–254：间歇按住维持通道高度
-  for (var t = tOf(118); t < tOf(254); t += 0.42) {
-    seq.push({ t: t, d: true });
-    seq.push({ t: t + 0.22, d: false });
-  }
-
-  seq.sort(function (a, b) { return a.t - b.t; });
-  return { crossbeat: seq, tOf: tOf, SPAN: SPAN };
-})();
-```
-
-暴露 `tOf` 是为了 Step 3 的探针能把"死亡位置 x"换算回"按键时刻 t"，否则只能人肉比对。
-
-- [ ] **Step 5: 跑测试确认通过**
-
-预期：`pass: 21, fail: 0, registered: 21, runErrors: []`，T3 显示通关。`loadErrors` 应为 `[]`（replay.js / replay.test.js 至此都已存在）。
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 cd "C:/Users/user/Documents/My Games/drgame" && git add tests && git commit -m "test: Crossbeat 通关回放，证明关卡人类可通"
 ```
+
+> **原计划的 Step 2/3/4（跑测试确认失败 → 用探针定位死亡点 → 迭代闭环）已被预研取代，本任务不再有这三步。**
+> 它们服务的是“手写 `tests/replay.js` 生成器”：`tOf()` 分段积分 + `jumpOver`/`jumpOntop` 排程 + 飞船段每 0.42 s 按 0.22 s。
+> 实测那份生成器**连第一根柱 126 都过不去**——飞船段必须按柱排程（见「预研结论」第 3 条），现已被 fixture 的反馈控制器取代。
+> 那三步的代码块已整块删除（留着只会被误抄成“初版”），探针也不再需要：序列已独立回放过
+> `finished=true / percent=100 / time=32.0625 s`，四个切换点 111.520 / 115.501 / 252.551 / 253.519。
+> 序列真失效时（物理或关卡再改，比如 Task 13 的手感校准）按 fixture 文件头写的方法重新生成，
+> **不要放宽 Step 2 的时长窗和切换点容差把它糊过去**——那些断言存在的意义就是报警。
 
 ---
 
@@ -3295,7 +3236,7 @@ cd "C:/Users/user/Documents/My Games/drgame" && git rm tests/visual-smoke.html
 
 - [ ] **Step 5: 跑完整测试 + 最终截图**
 
-预期 `pass: 20, fail: 0, registered: 20, runErrors: []`，`loadErrors: []`（所有文件都已存在）。
+预期 `pass: 21, fail: 0, registered: 21, runErrors: []`，`loadErrors: []`（所有文件都已存在）。
 
 `take_screenshot` 存档最终画面，与 `gd_ref/gd3.jpg` 并排比对布局。
 

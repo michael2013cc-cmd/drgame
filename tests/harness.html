@@ -39,7 +39,7 @@
   var waited = 0;
   (function wait() {
     if (Object.keys(GD_ASSERT.SOURCES).length >= 6 || waited > 40) {
-      GD_ASSERT.expect_tests(20);
+      GD_ASSERT.expect_tests(21);
       var res = GD_ASSERT.run();
       res.loadErrors = window.__LOAD_ERRORS__ || [];
       res.runErrors = window.__RUN_ERRORS__ || [];

@@ -2,7 +2,7 @@
 
 一个正在开发中的网页横版节奏跳跃游戏：物理常数对齐 Geometry Dash 2.2，原创一关 32 秒关卡 `Crossbeat`，方块（cube）+ 飞船（ship）两种模式，**双击即玩、零构建、零依赖**。
 
-> ⚠️ **现状（2026-11-08）**：还没做完，现在**还不能玩**。已完成的是地基——物理层、关卡数据、以及在真实浏览器里跑的 11 条测试（全绿）。渲染、HUD、输入、音频、装配分别在 Task 9–11。想先跑起来看效果的，请去看下面的「现在能跑什么」。
+> ✅ **现状（2026-11-08）**：Task 1–12 已完成，**现在能玩了**——双击 `index.html` 即开。物理层、关卡数据、渲染、HUD、输入、音频、装配全部实现，测试套件 **21 条全绿**，其中 Task 12 的通关回放证明这一关机器人能打到 100%。剩下的是 Task 13（人工试玩与手感校准）。
 
 ## 版权边界（先说清楚）
 
@@ -17,13 +17,14 @@
 ```
 ✅ 物理模拟 + 碰撞判定 + 死亡重开     physics.js
 ✅ 关卡数据 Crossbeat + 数据校验      level.js
-✅ 浏览器测试套件（20 条全绿）        tests/
-❌ 画面 / 声音 / 可玩页面             render.js · hud.js · audio.js · index.html（尚未实现）
+✅ 浏览器测试套件（21 条全绿）        tests/
+✅ 画面 / HUD / 输入 / 合成音轨 / 装配  render.js · hud.js · input.js · audio.js · main.js · index.html
+✅ 通关回放（机器人打到 100%）        tests/replay.js · tests/replay.test.js
 ```
 
 ## 怎么跑测试
 
-**本机不需要也跑不了 Node**（项目故意如此，见下）。只要 Python 和一个浏览器：
+**测试本身不需要 Node**（项目故意零依赖）。只要 Python 和一个浏览器：
 
 ```bash
 # 仓库根目录
@@ -36,12 +37,12 @@ http://127.0.0.1:8765/tests/harness.html
 
 ```js
 window.__RESULTS__
-// 期望：{ pass: 20, fail: 0, registered: 20, runErrors: [] }
+// 期望：{ pass: 21, fail: 0, registered: 21, runErrors: [] }
 ```
 
-`registered` 是**注册数门禁**——测试文件如果在注册期抛异常会静默丢掉后面的用例而 `fail` 仍是 0，所以必须核对注册条数。`loadErrors` 里剩 `replay.js` / `replay.test.js` 两条 404 是**预期的前向引用**（Task 12 才实现），不是故障。
+`registered` 是**注册数门禁**——测试文件如果在注册期抛异常会静默丢掉后面的用例而 `fail` 仍是 0，所以必须核对注册条数。`loadErrors` 应当是 `[]`：`replay.js` / `replay.test.js` 在 Task 12 已补齐，从 Task 1 起一直挂着的那两条 404 前向引用至此消失。**若它不为空，就是真的加载失败**（文件名拼错或 `<script src>` 漏了），不是预期。
 
-必须走 http 而不是双击 `tests/harness.html`：架构约束测试（Task 8 的 D1）要用 `fetch` 读源码本身，`file://` 下 `fetch` 会被拦。而**游戏本体**将来是 `file://` 双击即玩的——所以代码用传统 `<script>` 而不是 ES module（ES module 在 `file://` 下被 CORS 拦）。
+必须走 http 而不是双击 `tests/harness.html`：架构约束测试（Task 8 的 D1）要用 `fetch` 读源码本身，`file://` 下 `fetch` 会被拦。而**游戏本体**是 `file://` 双击即玩的——所以代码用传统 `<script>` 而不是 ES module（ES module 在 `file://` 下被 CORS 拦）。
 
 ## 目录
 
@@ -52,6 +53,8 @@ tests/harness.html    测试入口；注册数门禁、错误分桶（load vs ru
 tests/assert.js       断言库（approx 是相对容差，且拒绝 expected===0）+ 源码预取（D1 要读源码文本）
 tests/physics.test.js T1–T6 + L/P 系列共 18 条
 tests/smoke.test.js   脚手架自检（2 条）
+tests/replay.js       预研生成并验证过的通关按键序列（170 个事件，来源见 docs/superpowers/research/）
+tests/replay.test.js  T3：回放通关，钉时长窗与四个切换点
 docs/superpowers/HANDOFF-2026-11-08.md      ← 接手的人先读这个
 docs/superpowers/plans/…-geometry-dash-clone.md   13 任务实现计划 + 缺陷台账
 docs/superpowers/specs/…-design.md          设计依据（常数出处、验收标准、诚实清单）
@@ -82,8 +85,8 @@ git clone https://github.com/michael2013cc-cmd/drgame.git && cd drgame
 开发分支是 `feat/crossbeat`，`master` 与它同步（同一提交）。当前默认分支显示为 `feat/crossbeat`（空仓库首次推送决定的），两边代码一致，随便哪个都能开工。
 
 1. 读 [docs/superpowers/HANDOFF-2026-11-08.md](docs/superpowers/HANDOFF-2026-11-08.md) —— 恢复执行的确切步骤、缓存与提交硬规则、已实测不必重验的数字、还欠着的缺陷各留给哪个任务。
-2. **Task 5 的两阶段审查都已跑完**（spec 合规复查 + 代码质量复查），质量复查提出的问题已修完。下一个任务是 **Task 6（跳板与跳环）**。
-3. 然后按计划 `Task 6 → 13` 顺序推进。每个任务的代码块都是完整写好的，不需要你自己设计。
+2. **Task 1–12 已完成**（Task 1–8 的两阶段审查已跑完）。下一个任务是 **Task 13（人工试玩与手感校准）**。
+3. 然后按计划做 `Task 13`：它没有新代码块，只有「真玩 → 按 spec §13 逐项校准」。每个任务都是"派新 subagent 实现 → spec 复查 → 代码质量复查 → 通过才进下一个"。
 
 协作规矩（这些是用真实事故换来的，别绕）：
 
