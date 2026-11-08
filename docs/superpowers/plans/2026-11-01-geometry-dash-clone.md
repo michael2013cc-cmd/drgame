@@ -10,6 +10,8 @@
 
 **Spec:** [docs/superpowers/specs/2026-11-01-geometry-dash-clone-design.md](../specs/2026-11-01-geometry-dash-clone-design.md)
 
+**交接快照（2026-11-08 停手处）**：[../HANDOFF-2026-11-08.md](../HANDOFF-2026-11-08.md) —— 恢复执行的确切步骤、硬规则、已实测事实、延后缺陷清单都在那里。接手的人先读它再读本计划。
+
 ---
 
 ## 环境事实（不要重复踩）
