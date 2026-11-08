@@ -75,6 +75,12 @@ docs/superpowers/specs/…-design.md          设计依据（常数出处、验�
 
 ## 想接手：三步
 
+```bash
+git clone https://github.com/michael2013cc-cmd/drgame.git && cd drgame
+```
+
+开发分支是 `feat/crossbeat`，`master` 与它同步（同一提交）。当前默认分支显示为 `feat/crossbeat`（空仓库首次推送决定的），两边代码一致，随便哪个都能开工。
+
 1. 读 [docs/superpowers/HANDOFF-2026-11-08.md](docs/superpowers/HANDOFF-2026-11-08.md) —— 恢复执行的确切步骤、缓存与提交硬规则、已实测不必重验的数字、5 条有意延后的缺陷各留给哪个任务。
 2. 第一件事是 **Task 5 的第二阶段代码质量复查**（spec 合规复查已过，质量复查还没跑）。
 3. 然后按计划 `Task 6 → 13` 顺序推进。每个任务的代码块都是完整写好的，不需要你自己设计。
