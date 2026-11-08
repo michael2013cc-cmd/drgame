@@ -145,31 +145,26 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
   // 实测 7 次；6 是给合法常数微调留的余量，原来的 2 低到"只弹两次也算连跳"
   GD_ASSERT.ok(bounced >= 6, '长按应自动连跳，实际连跳 ' + bounced + ' 次');
 
-  // coyote 探针。平地长按那个循环永远不离开地面，勾不出宽限期，所以要用台沿——
-  // 但实测走下台沿并不产生空中态：无输入从 y=1 台面（block y=0、x=1..4）走到 x=5.5439
-  // 那一步，stepCube 把 y 一步吸附到 0，全程 onGround 为真（空中态 0 步，台面高 2 格
-  // 时同样一步吸到底）。于是"离开地面"只能由起跳造成，宽限期窗口从失去地面那步起算。
+  // coyote 探针必须走台沿：平地长按那个循环永远不离开地面，多长的宽限期都勾不出来。
+  // 台沿此前也勾不出来——旧 stepCube 在失去支撑那一步把 y 从台面直接吸附到 0，全程
+  // onGround 为真（实测 x=5.5246 一步 1→0，两格台是 2→0），现在放成自由落体才验得了。
+  // 对照组实测：给 12 步（0.05 s）宽限期则 vy 回升 12 次、顶点回到 21.88，用例能跑红。
   var objs = [];
   for (var b = 1; b <= 4; b++) objs.push({ x: b, y: 0, t: 'block' });
   var cs = GD_Physics.create(LV(objs));
-  cs.x = 1; cs.y = 1; cs.onGround = true;          // 站在台面上，台面顶 y=1
-  GD_Physics.step(cs, true);                       // 起跳，这一步之后就不在地面了
-  for (var w = 0; w < 3; w++) GD_Physics.step(cs, false);   // 先松手，边沿触发的宽限期也要能勾出来
+  cs.x = 1.5; cs.y = 1; cs.onGround = true;          // 站在台面（顶 y=1）上
+  var kk = 0;
+  while (cs.onGround && kk < 300) { GD_Physics.step(cs, false); kk++; }
+  GD_ASSERT.ok(!cs.onGround, '走下台沿应进入自由落体，实测 ' + kk + ' 步后 y=' + cs.y);
+  GD_ASSERT.near(cs.y, 0.999, 0.01, '失去地面那步仍在台面上方（实测 0.999；旧吸附写法这里是 0）');
+  GD_ASSERT.near(cs.vy, -0.479, 0.01, '落体从静止起步，一步重力的增量（实测 -0.479）');
   var reJump = 0, prevVy = cs.vy;
-  for (var g = 0; g < 10; g++) {
+  for (var h = 0; h < 12; h++) {                     // 离地后 0.05 s 宽限期窗口
     GD_Physics.step(cs, true);
-    if (cs.vy >= prevVy) reJump++;        // 有宽限期就会在这里把 vy 重置回 JUMP_V0
+    if (cs.vy >= prevVy) reJump++;                   // 有宽限期就会在这里把 vy 重置回 JUMP_V0
     prevVy = cs.vy;
   }
-  GD_ASSERT.ok(!cs.onGround, 'coyote 窗口应仍在空中，否则被落地重置污染，实测 y=' + cs.y);
-  GD_ASSERT.ok(reJump === 0, '离地后按住 10 步不该再拿到起跳，vy 回升 ' + reJump + ' 次');
-  for (var q = 0; q < 60 && cs.vy > 0; q++) GD_Physics.step(cs, true);   // 爬到顶点
-  var fellBad = 0, prevY = cs.y;
-  for (var d = 0; d < 10; d++) {
-    GD_Physics.step(cs, true);
-    if (!(cs.vy < 0 && cs.y < prevY)) fellBad++;   // 下落段长按：vy 须为负、y 须继续降
-    prevY = cs.y;
-  }
-  GD_ASSERT.ok(fellBad === 0,
-    '下落段按住不该起跳，异常 ' + fellBad + ' 步，末态 y=' + cs.y + ' vy=' + cs.vy);
+  GD_ASSERT.ok(!cs.onGround, '宽限期窗口内应仍在下落，实得 y=' + cs.y + ' 第 ' + kk + ' 步离地');
+  GD_ASSERT.ok(reJump === 0, '离地后长按 0.05 s 不该补到起跳，vy 回升 ' + reJump + ' 次');
+  // 上升段不另开探针：长按连跳那个循环已经在钉 bounced，空中若多发一次起跳计数就会翻。
 });

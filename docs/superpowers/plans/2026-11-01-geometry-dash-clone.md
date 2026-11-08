@@ -72,11 +72,15 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && python -m http.server 
 
 用 Bash 工具的 `run_in_background: true`。预期：进程存活，无输出即正常。
 
+跨会话时这个后台进程会没（实测重开会话后 `navigate_page` 直接报 `ERR_CONNECTION_REFUSED`）：看到连接被拒就重跑 Step A，不要以为是用例挂了。
+
 **Step B — 打开测试页**
 
 MCP 调用 `mcp__browser-use__navigate_page`，`url = http://127.0.0.1:8765/tests/harness.html`。
 
 **每次都要加一个全新的查询串**（`?v=task3`、`?v=task4`……）。`python -m http.server` 会回 304，浏览器命中缓存时读到的是**上一版的 `harness.html`**，实测过一次：门禁数字没更新，凭空多出一条 `FAIL 用例注册数`，看着像实现的 bug 其实是缓存。改完文件再跑，若 `registered` 或 `loadErrors` 和磁盘上的内容不一致，先怀疑缓存，别怀疑代码。
+
+**查询串只管到 `harness.html` 自己，管不到它 `<script src>` 进去的子资源。**改过 `physics.js`/`level.js`/`*.test.js` 之后，光换 `?v=` 仍会拿到上一版物理：实测把 `stepCube` 的台沿吸附改成自由落体后，换新 `?v=` 的页面里走下台沿依旧是一步 `1→0`，`ignoreCache: true` 重新加载才见新行为。所以**本轮改动涉及子资源时，必须用 `navigate_page {type: "reload", ignoreCache: true}`**（或给子资源也带上查询串），否则测的是旧代码，红绿都不可信。
 
 **Step C — 读回结果**
 
@@ -412,7 +416,14 @@ window.GD_Physics = (function () {
   function stepCube(st, held, dt) {
     if (st.onGround) {
       if (held) { st.vy = CONST.JUMP_V0; st.onGround = false; }
-      else { st.y = GROUND_Y(st); }
+      else {
+        var gy = GROUND_Y(st);
+        // 支撑面掉到脚下以下 = 走出了台沿，必须放成自由落体，不能拿 gy 硬吸附。
+        // 旧写法一步把 y 从 1 拉到 0（实测 x=5.5246 那步，两格台同样是 2→0 一步到底），
+        // 于是"走下台阶"既不掉落也就永远勾不出空中态，coyote 无从验证。
+        if (gy < st.y) st.onGround = false;
+        else st.y = gy;
+      }
     }
     if (!st.onGround) {
       // velocity-Verlet：对恒定加速度解析精确，不要改成半隐式欧拉
@@ -623,6 +634,7 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add tests && git -
 **Files:**
 - Modify: `tests/physics.test.js`（追加）
 - Modify: `tests/harness.html`（`expect_tests` 改成 8）
+- Modify: `physics.js`（两处判定：死亡重开的整步取整、走下台沿改自由落体）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -692,33 +704,28 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
   // 实测 7 次；6 是给合法常数微调留的余量，原来的 2 低到"只弹两次也算连跳"
   GD_ASSERT.ok(bounced >= 6, '长按应自动连跳，实际连跳 ' + bounced + ' 次');
 
-  // coyote 探针。平地长按那个循环永远不离开地面，勾不出宽限期，所以要用台沿——
-  // 但实测走下台沿并不产生空中态：无输入从 y=1 台面（block y=0、x=1..4）走到 x=5.5439
-  // 那一步，stepCube 把 y 一步吸附到 0，全程 onGround 为真（空中态 0 步，台面高 2 格
-  // 时同样一步吸到底）。于是"离开地面"只能由起跳造成，宽限期窗口从失去地面那步起算。
+  // coyote 探针必须走台沿：平地长按那个循环永远不离开地面，多长的宽限期都勾不出来。
+  // 台沿此前也勾不出来——旧 stepCube 在失去支撑那一步把 y 从台面直接吸附到 0，全程
+  // onGround 为真（实测 x=5.5246 一步 1→0，两格台是 2→0），现在放成自由落体才验得了。
+  // 对照组实测：给 12 步（0.05 s）宽限期则 vy 回升 12 次、顶点回到 21.88，用例能跑红。
   var objs = [];
   for (var b = 1; b <= 4; b++) objs.push({ x: b, y: 0, t: 'block' });
   var cs = GD_Physics.create(LV(objs));
-  cs.x = 1; cs.y = 1; cs.onGround = true;          // 站在台面上，台面顶 y=1
-  GD_Physics.step(cs, true);                       // 起跳，这一步之后就不在地面了
-  for (var w = 0; w < 3; w++) GD_Physics.step(cs, false);   // 先松手，边沿触发的宽限期也要能勾出来
+  cs.x = 1.5; cs.y = 1; cs.onGround = true;          // 站在台面（顶 y=1）上
+  var kk = 0;
+  while (cs.onGround && kk < 300) { GD_Physics.step(cs, false); kk++; }
+  GD_ASSERT.ok(!cs.onGround, '走下台沿应进入自由落体，实测 ' + kk + ' 步后 y=' + cs.y);
+  GD_ASSERT.near(cs.y, 0.999, 0.01, '失去地面那步仍在台面上方（实测 0.999；旧吸附写法这里是 0）');
+  GD_ASSERT.near(cs.vy, -0.479, 0.01, '落体从静止起步，一步重力的增量（实测 -0.479）');
   var reJump = 0, prevVy = cs.vy;
-  for (var g = 0; g < 10; g++) {
+  for (var h = 0; h < 12; h++) {                     // 离地后 0.05 s 宽限期窗口
     GD_Physics.step(cs, true);
-    if (cs.vy >= prevVy) reJump++;        // 有宽限期就会在这里把 vy 重置回 JUMP_V0
+    if (cs.vy >= prevVy) reJump++;                   // 有宽限期就会在这里把 vy 重置回 JUMP_V0
     prevVy = cs.vy;
   }
-  GD_ASSERT.ok(!cs.onGround, 'coyote 窗口应仍在空中，否则被落地重置污染，实测 y=' + cs.y);
-  GD_ASSERT.ok(reJump === 0, '离地后按住 10 步不该再拿到起跳，vy 回升 ' + reJump + ' 次');
-  for (var q = 0; q < 60 && cs.vy > 0; q++) GD_Physics.step(cs, true);   // 爬到顶点
-  var fellBad = 0, prevY = cs.y;
-  for (var d = 0; d < 10; d++) {
-    GD_Physics.step(cs, true);
-    if (!(cs.vy < 0 && cs.y < prevY)) fellBad++;   // 下落段长按：vy 须为负、y 须继续降
-    prevY = cs.y;
-  }
-  GD_ASSERT.ok(fellBad === 0,
-    '下落段按住不该起跳，异常 ' + fellBad + ' 步，末态 y=' + cs.y + ' vy=' + cs.vy);
+  GD_ASSERT.ok(!cs.onGround, '宽限期窗口内应仍在下落，实得 y=' + cs.y + ' 第 ' + kk + ' 步离地');
+  GD_ASSERT.ok(reJump === 0, '离地后长按 0.05 s 不该补到起跳，vy 回升 ' + reJump + ' 次');
+  // 上升段不另开探针：长按连跳那个循环已经在钉 bounced，空中若多发一次起跳计数就会翻。
 });
 ```
 
@@ -729,7 +736,7 @@ GD_ASSERT.test('T5c 无 coyote time，长按落地自动连跳', function () {
 - `T5a` 红在"DEATH_DELAY 后应自动重开"：`DEATH_DELAY = 1.0` 恰好等于 240 个 `1/240`，但 1/240 二进制除不尽，连减 240 次还剩 **+2.3e-15**，`deadTimer <= 0` 永远差一步，重开稳定发生在第 241 步。修法是 `physics.js` 的死亡分支改成按"离整步最近"判定（`<= CONST.DT * 0.5`），Task 2 Step 3 的代码块已同步；不要让测试多等一步来回避——那会把"重开晚 0.5 秒"这类真回归也一并放宽。测试侧则把等待步数写成 `round(DEATH_DELAY / DT)`（当前 = 240），别写死字面量：实测把 `DEATH_DELAY` 改成 0.5 时 120 步就重开，剩下 120 步是活跑、x 白走 5.19 格，`near(st.x, 0, 0.05)` 会把正确的实现跑红。另外钉住死亡瞬间的 x（实测 7.7462 = 玩家前沿 `st.x+0.5` 首次进入致死框 `x∈[8.225, 8.775]` 的那一步）和重开后的 `percent === 0 / time === 0`，只断言 `!alive` 时任何误判早死都能绿灯。
 - `T5b` 红在"2 格墙应能跳过"：`6 - span ≈ 1.93` 起跳会让人**落在墙上**而不是跳过墙——下落途中 `LAND_TOL` 先把第 1 格的顶当成可站面把人吸进去，随即被缩小框判死。Step 3 给出实测可通过的起跳阈值区间 `x∈[2.5, 5.45]`（阈值从 1.00 扫到 5.95、步长 0.05，连续无空洞），`6 - span/2 ≈ 3.966` 正落在区间中点；阈值不等于触发起跳的 x，实测触发于 `x=3.9813`，差一个步长量化。
 
-`T5c` 应直接通过（长按自动连跳在 Task 2 就实现了），实测 `bounced: 7, minY: 0`，下限因此收到 `>= 6`。它的 coyote 探针不能用"走下台沿"：实测站在 y=1 台面（block `y=0`、x=1..4）无输入走到 `x=5.5439` 那一步，`stepCube` 把 y 一步吸附到 0，全程 `onGround` 为真、空中态 0 步（台面高 2 格时同样一步吸到底），所以"离开地面"只能由起跳造成，窗口从失去地面那一步起算。负控照抄最终探针结构、只在离地后外部把 `vy` 重置回 `JUMP_V0`（等价于 `stepCube` 里多一条宽限期分支）：宽限 3 步 → `reJump: 3`、顶点从 3.1737 涨到 3.7147；宽限 10 步 → `reJump: 10`、顶点 4.3599；在下落段授予起跳 → `fellBad: 10`（干净跑为 0），两条断言立刻红。
+`T5c` 的长按部分应直接通过（自动连跳在 Task 2 就实现了），实测 `bounced: 7, minY: 0`，下限因此收到 `>= 6`。它的 coyote 部分**第一次跑会红**，红的原因是 `physics.js` 而不是测试：站在 y=1 台面（block `y=0`、x=1..4）无输入走到 `x=5.5246` 那一步，`stepCube` 把 y 一步吸附到 0、`onGround` 始终为真，空中态 0 步（两格台同样一步吸到底）。"走下台阶不掉落"既不符合原版手感，也让"无 coyote time"根本没有可验的空中态。修法是支撑面掉到脚下以下时置 `onGround = false`、交给下面的重力积分做自由落体（Task 2 Step 3 代码块已同步），实测失去地面那步 `y=0.999, vy=-0.479`，一格台 31 步、两格台 44 步后落地。负控：离地后 12 步内外部把 `vy` 重置回 `JUMP_V0`（等价于 `stepCube` 多一条宽限期分支）实测 `reJump: 12`、窗口内 `maxVy: 21.88`，断言立刻红；干净跑 `reJump: 0`、`maxVy: -0.958`。
 
 - [ ] **Step 3: 修起跳时机，并把"跳过/撞死"钉成可证伪的断言**
 
@@ -1923,4 +1930,5 @@ cd "C:/Users/user/Documents/Qoder/2026-11-01/4498b9c7" && git add -A && git -c u
 | 11 | `respawn` 的两个三元回退会静默改成 cube/1x（`segments` 为空或拼错时没有任何测试会红）；`GROUND_Y` 用中心点、`collide` 用整框，两者对"是否站在方块上"判定不一致；`CONST` 按引用导出、可被外部改写（实测 `G=1` 后顶点变 151.7）；`measureJump` 起点取在起跳步之后、滞空与跳距各少算 1 个 dt；指纹断言写死 2.173781 会让合法的常数重调误报 | 静默换模式时后续任务全绿也没有测试会红；实测吃掉 0.0375 秒的长按起跳输入，症状会传染给 Task 9（渲染倾角）、Task 12（回放机器人）与 ship→cube 传送门；`measureJump` 撞 2000 步上限时静默返回残值当真值 | 直接读取段 0 + 默认关卡补 `segments`；中心判定改成与 `collide` 一致的整框判定；`Object.freeze` CONST 及四个子表；起点前移并对 2000 步截断抛错；指纹期望值改由 `v0²/(2g)` 现算。延后（留给 Task 4/6 实现者顺手处理）：命中框内联字面量（0.35、-0.6…+1.6、1.4×2.6 在 collide 重复两处）未收进 `CONST.HIT`；`collide` 的 `pb` 只算一次、循环中 `st.y` 被改后仍用旧框测后续对象；`GROUND_Y`/`GROUND`/`near` 命名与 physics.js:13 的"致用"错字；`SPIKE_HB` 未拆成宽高 |
 | 12 | `deadTimer <= 0` 判重开：`DEATH_DELAY = 1.0` 恰为 240 个 `1/240`，但 1/240 二进制除不尽，连减 240 次剩 +2.3e-15 | 重开永远慢一步；T5a 里 `near(st.x, 0, 0.05)` 的预算被这一步白吃掉 0.043 格（86.5%），后面对重开时序的任何判定都建立在沙子上 | 死亡分支改为 `<= CONST.DT * 0.5`（按离整步最近判定），Task 2 Step 3 代码块同步 |
 | 13 | T5b 用"距墙一整跳"（`6 - span ≈ 1.93`）起跳 | 人不是跳过墙而是**落在墙上**：下落途中 `LAND_TOL` 先把第 1 格的顶当成可站面把人吸进方块内部，随即被缩小框判死；`trial(2)` 恒红，症状看起来像"跳跃高度不够"会误导去改 `JUMP_V0` | 起跳点改为半跳距 `6 - span/2`，让顶点落在墙前沿；实测可通过区间 x∈[2.5, 5.45]（阈值 1.00→5.95、步长 0.05 扫出，连续无空洞），3.966 在正中。本条原先记的 `[2.5, 4.6]`/`3.97` 是过期读数，已由第 14 条重扫修正 |
-| 14 | Task 4 质量复查：T5a/T5b/T5c 只断"结果"不钉"原因"。T5a 只查 `!alive`（任何误判早死都绿灯）、名字写着"从 0% 重开"却从不看 `percent`、重开等待写死 240 步；T5b 的 `trial()` 只返回 `st.alive`，"跳过 2 格墙"没证明翻过墙、"撞死 3 格墙"没证明死在墙上，注释里的起跳区间还是过期读数；T5c 标题里的"无 coyote time"零覆盖——平地长按那个循环从不离开地面，任何宽限期都照样绿，`bounced >= 2` 低到"只弹两次也算连跳" | 误判早死、重开没回到 0%、判定框改坏、有人加 coyote grace 都不会红；写死 240 步还会在合法微调常数时把正确实现跑红（模拟 `DEATH_DELAY = 0.5` → 120 步就重开，剩下 120 步活跑 x=5.193，`near(st.x, 0, 0.05)` 必红） | T5a 钉住死亡瞬间 x（实测 7.7462：玩家前沿 `st.x+0.5` 首次进入致死框 `x∈[8.225, 8.775]` 的那一步）+ "同关卡去掉尖刺同样步数仍活着"的反证 + 重开后 `percent === 0 && time === 0`，等待步数改成 `round(CONST.DEATH_DELAY / CONST.DT)`（当前 240，等价性不再写进测试体）；T5b `trial()` 改返 `{alive, x, y}`，断 2 格墙 480 步跑到 x=20.77 > 8、3 格墙死在墙柱内（实测 x=6.2316、y=2.1454，落在 x∈(6,7)），注释与第 13 条同步成实测区间；T5c 的 `bounced` 下限收到 6（实测 7）并补真 coyote 探针——`physics.js` 不需改动，但实测走下 y=1 台面**不产生空中态**（无输入走到 x=5.5439 那一步 `stepCube` 把 y 一步吸附到 0，空中态 0 步；台面高 2 格时同样一步吸到底，这是"走下台沿"拿不到 `!onGround` 的原因），故窗口改从起跳失去地面那一步起算：离地后先松 3 步再按住 10 步，断 `vy` 严格递减（不许被重置回 `JUMP_V0`）与越过顶点后 `vy < 0 && y` 继续下降；负控照抄最终探针结构、在离地后外部把 `vy` 重置回 `JUMP_V0`（相当于 `stepCube` 多一条宽限期分支）即红——宽限 3 步得 `reJump: 3`、顶点 3.1737→3.7147，宽限 10 步得 `reJump: 10`、顶点 4.3599，在下落段授予起跳得 `fellBad: 10`（干净跑 0）。注册数仍 8，`pass: 8, fail: 0` |
+| 14 | Task 4 质量复查：T5a/T5b/T5c 只断"结果"不钉"原因"。T5a 只查 `!alive`（任何误判早死都绿灯）、名字写着"从 0% 重开"却从不看 `percent`、重开等待写死 240 步；T5b 的 `trial()` 只返回 `st.alive`，"跳过 2 格墙"没证明翻过墙、"撞死 3 格墙"没证明死在墙上，注释里的起跳区间还是过期读数；T5c 标题里的"无 coyote time"零覆盖——平地长按那个循环从不离开地面，任何宽限期都照样绿，`bounced >= 2` 低到"只弹两次也算连跳" | 误判早死、重开没回到 0%、判定框改坏、有人加 coyote grace 都不会红；写死 240 步还会在合法微调常数时把正确实现跑红（模拟 `DEATH_DELAY = 0.5` → 120 步就重开，剩下 120 步活跑 x=5.193，`near(st.x, 0, 0.05)` 必红） | T5a 钉住死亡瞬间 x（实测 7.7462：玩家前沿 `st.x+0.5` 首次进入致死框 `x∈[8.225, 8.775]` 的那一步）+ "同关卡去掉尖刺同样步数仍活着"的反证 + 重开后 `percent === 0 && time === 0`，等待步数改成 `round(CONST.DEATH_DELAY / CONST.DT)`（当前 240，等价性不再写进测试体）；T5b `trial()` 改返 `{alive, x, y}`，断 2 格墙 480 步跑到 x=20.77 > 8、3 格墙死在墙柱内（实测 x=6.2316、y=2.1454，落在 x∈(6,7)），注释与第 13 条同步成实测区间；T5c 的 `bounced` 下限收到 6（实测 7）。本条当时给 T5c 补的"真 coyote 探针"其实是拿起跳后按住冒充，测的是"空中不连跳"而不是 coyote 宽限期，它那句"`physics.js` 不需改动、走下台沿不产生空中态"也把缺陷当成了既成事实——由第 15 条推翻并修物理 |
+| 15 | Task 4 质量复查第二轮：走下台沿不掉落是 **`physics.js` 的缺陷**，不是"没法测 coyote"的客观限制。原 `stepCube` 在 `onGround` 且未按时，无条件 `st.y = GROUND_Y(st)`，而 `GROUND_Y` 的支撑窗口是整框重叠（`st.x > o.x + 1.52` 即失效），于是失去支撑那一步把 y 从台面直接拽到地面（实测 x=5.5246 处 1→0、两格台 2→0，`onGround` 全程为真、空中态 0 步） | 原版里走下台阶是掉下去，这里等于"踩空即传送"，Task 5 关卡里任何台沿、Task 12 回放机器人都会被它污染；更要紧的是没有空中态就没有 coyote 的可验对象，第 14 条因此只能用起跳冒充 | `stepCube` 改为支撑面低于脚下时置 `onGround = false`、交给同一步的重力积分做自由落体（`Task 2` Step 3 代码块同步）。实测失去地面那步 `y=0.999, vy=-0.479`（从静止起步，一步重力增量），一格台 31 步、两格台 44 步后落地；T5b 起跳阈值区间在新物理下重扫仍为连续的 `[2.5, 5.45]`、3 格墙 0 个可通过阈值、死点 x=6.2316 未变，注册数与 `pass: 8, fail: 0` 不变。coyote 探针改成真的走台沿：离地后按住 12 步（0.05 s）断 `reJump === 0`，负控在离地后外部把 `vy` 重置回 `JUMP_V0` 得 `reJump: 12`、窗口内 `maxVy: 21.88`（干净跑 `maxVy: -0.958`）。另记一条流程坑：`?v=` 只 bust `harness.html`，**bust 不到 `<script src>` 子资源**——改完 `physics.js` 换新 `?v=` 的页面照旧跑旧物理，必须 `navigate_page {type: "reload", ignoreCache: true}`；「测试执行流程」Step B 已补 |

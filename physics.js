@@ -115,7 +115,14 @@ window.GD_Physics = (function () {
   function stepCube(st, held, dt) {
     if (st.onGround) {
       if (held) { st.vy = CONST.JUMP_V0; st.onGround = false; }
-      else { st.y = GROUND_Y(st); }
+      else {
+        var gy = GROUND_Y(st);
+        // 支撑面掉到脚下以下 = 走出了台沿，必须放成自由落体，不能拿 gy 硬吸附。
+        // 旧写法一步把 y 从 1 拉到 0（实测 x=5.5246 那步，两格台同样是 2→0 一步到底），
+        // 于是"走下台阶"既不掉落也就永远勾不出空中态，coyote 无从验证。
+        if (gy < st.y) st.onGround = false;
+        else st.y = gy;
+      }
     }
     if (!st.onGround) {
       // velocity-Verlet：对恒定加速度解析精确，不要改成半隐式欧拉
